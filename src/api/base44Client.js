@@ -78,6 +78,7 @@ function handlerFor(parent) {
 
 export const base44 = new Proxy(baseNoop, {
   get(target, prop) {
+    if (prop === '__base44_local_proxy_marker__') return undefined;
     if (prop === 'then' || prop === Symbol.toStringTag || prop === Symbol.iterator) return undefined;
     const next = target[prop];
     if (typeof next === 'function') {
