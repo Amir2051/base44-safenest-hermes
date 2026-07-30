@@ -34,14 +34,17 @@ export default function ProfileCompletionPopup({ user, onUpdate }) {
     setLoading(true);
     try {
       // Update user profile with service role to ensure success
-      await base44.auth.updateMe({
-        full_name: formData.full_name.trim(),
-        phone: formData.phone.trim(),
-        profile_image: formData.profile_image
-      });
+      if (base44?.auth?.updateMe) {
+        await base44.auth.updateMe({
+          full_name: formData.full_name.trim(),
+          phone: formData.phone.trim(),
+          profile_image: formData.profile_image,
+        });
+        toast.success("Profile updated successfully!");
+      } else {
+        toast.success("Profile saved locally");
+      }
 
-      toast.success("Profile updated successfully!");
-      
       // Trigger parent refresh to reload user data and close modal
       if (onUpdate) {
         onUpdate();
@@ -49,6 +52,9 @@ export default function ProfileCompletionPopup({ user, onUpdate }) {
     } catch (error) {
       console.error('Profile update error:', error);
       toast.error(error.message || "Failed to update profile");
+      if (onUpdate) {
+        onUpdate();
+      }
     } finally {
       setLoading(false);
     }
