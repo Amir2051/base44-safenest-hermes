@@ -55,14 +55,22 @@ export default function QuickActionsPanel({ caseData, onUpdate, onOpenResponse, 
       const tasks = [];
       if (!activeCase?.ai_analysis) {
         tasks.push(
-          base44.functions.invoke('caseSummary', {
-            caseId,
-            entityName
-          }).catch((e) => ({ data: { error: e?.message || 'case_summary_failed' } }))
+          fetch('/api/safenestt/case_summary', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ case_id: caseId, entity_name: entityName }),
+          })
+            .then(r => r.json())
+            .catch((e) => ({ data: { error: e?.message || 'case_summary_failed' } }))
         );
       }
       tasks.push(
-        base44.functions.invoke('blockchainMonitor', { caseId })
+        fetch('/api/safenestt/fraud_analysis', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ case_id: caseId }),
+        })
+          .then(r => r.json())
           .catch((e) => ({ data: { error: e?.message || 'blockchain_monitor_failed' } }))
       );
 

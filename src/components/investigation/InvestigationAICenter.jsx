@@ -65,27 +65,37 @@ export default function InvestigationAICenter({ caseData, onUpdate }) {
 
   const hasExisting = useMemo(() => Boolean(caseData.ai_analysis), [caseData.ai_analysis]);
 
+  const callBridge = async (endpoint, body) => {
+    const r = await fetch('/api/safenestt' + endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error('bridge error ' + r.status);
+    return r.json();
+  };
+
   const runAll = async () => {
     const chosen = TASKS.filter((t) => selected[t.key]);
     if (!caseData?.id) {
-      toast.warning("Open a case before running AI analysis");
+      toast.warning('Open a case before running AI analysis');
       return;
     }
     const already = Boolean(caseData.ai_analysis);
-    const onlySummary = chosen.every((t) => t.key === "summary" || t.key === "fraud");
-    if (already && onlySummary && chosen.length > 0) {
-      toast.success("AI analysis already available");
+    const onlySummary = chosen.every((t) => t.key === 'summary' || t.key === 'fraud');
+    if (already && onlySummary) {
+      toast.success('AI analysis already available');
       onUpdate?.();
       return;
     }
     if (chosen.length === 0) {
-      toast.warning("Select at least one analysis to run");
+      toast.warning('Select at least one analysis to run');
       return;
     }
     const runId = ++runIdRef.current;
     setRunning(true);
     setLastRun(new Date().toISOString());
-    chosen.forEach((t) => setStatus(t.key, "running"));
+    chosen.forEach((t) => setStatus(t.key, 'running'));
     const toastId = toast.loading(`Running ${chosen.length} AI analysis task(s)...`);
 
     try {
@@ -95,7 +105,8 @@ export default function InvestigationAICenter({ caseData, onUpdate }) {
           try {
             let res;
             try {
-              res = await base44.functions.invoke(t.fn, t.payload(caseData));
+              const endpoint = t.key === 'fraud' ? '/fraud_analysis' : t.key === 'summary' ? '/case_summary' : '/admin_action';
+              res = await callBridge(endpoint, t.payload(caseData));
             } catch (e) {
               res = { data: { fallback: true, result: { status: (t.key === "summary" ? "local_summary" : "completed"), message: "Local fallback: AI backend unavailable" } } };
             }
