@@ -53,6 +53,11 @@ const AuthenticatedApp = () => {
         ))}
         <Route path="/PrivacyAdvisor" element={<LayoutWrapper currentPageName="PrivacyAdvisor"><PrivacyAdvisor /></LayoutWrapper>} />
         <Route path="/UserExport" element={<LayoutWrapper currentPageName="UserExport"><UserExport /></LayoutWrapper>} />
+        <Route path="/admin" element={<LayoutWrapper currentPageName="AdminDashboard"><Pages.AdminDashboard /></LayoutWrapper>} />
+        <Route path="/admin-dashboard" element={<LayoutWrapper currentPageName="AdminDashboard"><Pages.AdminDashboard /></LayoutWrapper>} />
+        <Route path="/admin-users" element={<LayoutWrapper currentPageName="AdminUserApprovals"><Pages.AdminUserApprovals /></LayoutWrapper>} />
+        <Route path="/admin-roles" element={<LayoutWrapper currentPageName="AdminUserApprovals"><Pages.AdminUserApprovals /></LayoutWrapper>} />
+        <Route path="/tasks" element={<LayoutWrapper currentPageName="Cases"><Pages.Cases /></LayoutWrapper>} />
         <Route path="*" element={<PageNotFound />} />
       </Routes>
     </LayoutWrapper>

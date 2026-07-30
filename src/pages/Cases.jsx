@@ -49,11 +49,17 @@ export default function Cases() {
   const { data: fetchedCases = [], isLoading: loadingCases } = useQuery({
     queryKey: ['my-cases-admin'],
     queryFn: async () => {
+      let data = [];
       if (user?.role === 'admin' || user?.is_admin) {
-        return base44.entities.MyCase.list('-created_date', 1000);
+        data = await base44.entities.MyCase.list('-created_date', 1000);
+      } else {
+        data = await base44.entities.MyCase.filter({ created_by: user.email }, '-created_date', 1000);
       }
-      // Fallback if non-admin lands here
-      return base44.entities.MyCase.filter({ created_by: user.email }, '-created_date', 1000);
+      if (!Array.isArray(data) || data.length === 0) {
+        const mod = await import('@/hooks/useLocalData');
+        return mod.localList('cases');
+      }
+      return data;
     },
     enabled: !!user
   });
