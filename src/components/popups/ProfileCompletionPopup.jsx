@@ -50,6 +50,14 @@ export default function ProfileCompletionPopup({ user, onUpdate }) {
     } catch {}
   };
 
+  const dismiss = () => {
+    setSubmitted(true);
+    try {
+      sessionStorage.setItem(submittedKey, "1");
+    } catch {}
+    onUpdate?.();
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!formData.full_name?.trim() || !formData.phone?.trim()) {
@@ -59,7 +67,8 @@ export default function ProfileCompletionPopup({ user, onUpdate }) {
     setLoading(true);
     try {
       if (formData.profile_image) persist(formData);
-      if (base44?.auth?.updateMe) {
+      const hasSDK = typeof base44 !== "undefined" && base44 && base44.auth && base44.auth.updateMe;
+      if (hasSDK) {
         await base44.auth.updateMe({
           full_name: formData.full_name.trim(),
           phone: formData.phone.trim(),
@@ -69,14 +78,12 @@ export default function ProfileCompletionPopup({ user, onUpdate }) {
       } else {
         toast.success("Profile saved locally");
       }
-      setSubmitted(true);
-      onUpdate?.();
+      dismiss();
     } catch (error) {
       console.error("Profile update error:", error);
-      toast.error(error.message || "Failed to update profile");
+      toast.error(error?.message || "Failed to update profile");
       persist(formData);
-      setSubmitted(true);
-      onUpdate?.();
+      dismiss();
     } finally {
       setLoading(false);
     }
@@ -138,7 +145,12 @@ export default function ProfileCompletionPopup({ user, onUpdate }) {
                   if (!file) return;
                   const uploadToast = toast.loading("Uploading...");
                   try {
-                    const { file_url } = await base44.integrations.Core.UploadFile({ file });
+                    const core = typeof base44 !== "undefined" ? base44?.integrations?.Core : null;
+                    if (!core) {
+                      toast.error("Profile editor is running in local-only mode; upload is unavailable", { id: uploadToast });
+                      return;
+                    }
+                    const { file_url } = await core.UploadFile({ file });
                     setFormData((prev) => ({ ...prev, profile_image: file_url }));
                     toast.success("Photo uploaded", { id: uploadToast });
                   } catch (error) {
