@@ -1,39 +1,51 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { base44 } from "@/api/base44Client";
 import { UserCircle, Upload } from "lucide-react";
 import { toast } from "sonner";
 
+const STORAGE_KEY = "safenestt_profile_form";
+
+function loadSaved() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
 export default function ProfileCompletionPopup({ user, onUpdate }) {
   const [loading, setLoading] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const saved = loadSaved();
   const [formData, setFormData] = useState({
-    full_name: user?.full_name || "",
-    phone: user?.phone || "",
-    profile_image: user?.profile_image || ""
+    full_name: user?.full_name || saved.full_name || "",
+    phone: user?.phone || saved.phone || "",
+    profile_image: user?.profile_image || saved.profile_image || "",
   });
 
-  if (!user) return null;
+  const isProfileIncomplete = !submitted && (!user?.full_name || !user?.phone);
 
-  // Check if profile is incomplete
-  const isProfileIncomplete = !user.full_name || !user.phone;
+  if (!user || !isProfileIncomplete) return null;
 
-  if (!isProfileIncomplete) return null;
+  const persist = (data) => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    } catch {}
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
-    // Validate fields
     if (!formData.full_name?.trim() || !formData.phone?.trim()) {
       toast.error("Please fill in all fields");
       return;
     }
-
     setLoading(true);
     try {
-      // Update user profile with service role to ensure success
+      if (formData.profile_image) persist(formData);
       if (base44?.auth?.updateMe) {
         await base44.auth.updateMe({
           full_name: formData.full_name.trim(),
@@ -44,17 +56,14 @@ export default function ProfileCompletionPopup({ user, onUpdate }) {
       } else {
         toast.success("Profile saved locally");
       }
-
-      // Trigger parent refresh to reload user data and close modal
-      if (onUpdate) {
-        onUpdate();
-      }
+      setSubmitted(true);
+      onUpdate?.();
     } catch (error) {
-      console.error('Profile update error:', error);
+      console.error("Profile update error:", error);
       toast.error(error.message || "Failed to update profile");
-      if (onUpdate) {
-        onUpdate();
-      }
+      persist(formData);
+      setSubmitted(true);
+      onUpdate?.();
     } finally {
       setLoading(false);
     }
@@ -79,7 +88,7 @@ export default function ProfileCompletionPopup({ user, onUpdate }) {
             <Input
               id="full_name"
               value={formData.full_name}
-              onChange={(e) => setFormData(prev => ({ ...prev, full_name: e.target.value }))}
+              onChange={(e) => setFormData((prev) => ({ ...prev, full_name: e.target.value }))}
               placeholder="John Doe"
               className="bg-[#0f1419] border-gray-700 text-white focus:border-cyan-500"
             />
@@ -90,7 +99,7 @@ export default function ProfileCompletionPopup({ user, onUpdate }) {
             <Input
               id="phone"
               value={formData.phone}
-              onChange={(e) => setFormData(prev => ({ ...prev, phone: e.target.value }))}
+              onChange={(e) => setFormData((prev) => ({ ...prev, phone: e.target.value }))}
               placeholder="+1 (555) 000-0000"
               className="bg-[#0f1419] border-gray-700 text-white focus:border-cyan-500"
             />
@@ -100,9 +109,9 @@ export default function ProfileCompletionPopup({ user, onUpdate }) {
             <Label className="text-gray-200">Profile Photo (Optional)</Label>
             <div className="flex items-center gap-3">
               {formData.profile_image && (
-                <img 
-                  src={formData.profile_image} 
-                  alt="Profile" 
+                <img
+                  src={formData.profile_image}
+                  alt="Profile"
                   className="w-12 h-12 rounded-full object-cover border-2 border-cyan-500/30"
                 />
               )}
@@ -112,16 +121,15 @@ export default function ProfileCompletionPopup({ user, onUpdate }) {
                 accept="image/*"
                 className="hidden"
                 onChange={async (e) => {
-                  const file = e.target.files[0];
+                  const file = e.target.files?.[0];
                   if (!file) return;
-                  
-                  const uploadToast = toast.loading('Uploading...');
+                  const uploadToast = toast.loading("Uploading...");
                   try {
                     const { file_url } = await base44.integrations.Core.UploadFile({ file });
-                    setFormData(prev => ({ ...prev, profile_image: file_url }));
-                    toast.success('Photo uploaded', { id: uploadToast });
+                    setFormData((prev) => ({ ...prev, profile_image: file_url }));
+                    toast.success("Photo uploaded", { id: uploadToast });
                   } catch (error) {
-                    toast.error('Upload failed', { id: uploadToast });
+                    toast.error("Upload failed", { id: uploadToast });
                   }
                 }}
               />
@@ -132,18 +140,18 @@ export default function ProfileCompletionPopup({ user, onUpdate }) {
                   className="w-full border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/10 cursor-pointer"
                   onClick={(e) => {
                     e.preventDefault();
-                    document.getElementById('popup-photo-upload').click();
+                    document.getElementById("popup-photo-upload")?.click();
                   }}
                 >
                   <Upload className="w-4 h-4 mr-2" />
-                  {formData.profile_image ? 'Change Photo' : 'Upload Photo'}
+                  {formData.profile_image ? "Change Photo" : "Upload Photo"}
                 </Button>
               </label>
             </div>
           </div>
 
-          <Button 
-            type="submit" 
+          <Button
+            type="submit"
             className="w-full bg-cyan-600 hover:bg-cyan-700 mt-4"
             disabled={loading}
           >
