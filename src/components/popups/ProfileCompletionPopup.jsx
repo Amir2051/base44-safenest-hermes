@@ -19,13 +19,26 @@ function loadSaved() {
 
 export default function ProfileCompletionPopup({ user, onUpdate }) {
   const [loading, setLoading] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
+  const submittedKey = "safenestt_profile_submitted";
+  const [submitted, setSubmitted] = useState(() => {
+    try {
+      return sessionStorage.getItem(submittedKey) === "1";
+    } catch {
+      return false;
+    }
+  });
   const saved = loadSaved();
   const [formData, setFormData] = useState({
     full_name: user?.full_name || saved.full_name || "",
     phone: user?.phone || saved.phone || "",
     profile_image: user?.profile_image || saved.profile_image || "",
   });
+
+  useEffect(() => {
+    try {
+      if (submitted) sessionStorage.setItem(submittedKey, "1");
+    } catch {}
+  }, [submitted]);
 
   const isProfileIncomplete = !submitted && (!user?.full_name || !user?.phone);
 
