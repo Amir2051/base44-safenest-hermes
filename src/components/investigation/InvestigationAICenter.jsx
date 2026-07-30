@@ -47,6 +47,27 @@ const TASKS = [
 ];
 
 export default function InvestigationAICenter({ caseData, onUpdate }) {
+  const hasCase = Boolean(caseData?.id);
+
+  if (!hasCase) {
+    return (
+      <Card className="bg-gradient-to-br from-purple-500/10 to-blue-500/10 border-purple-500/30">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-white flex items-center gap-2">
+            <Brain className="w-5 h-5 text-purple-400" />
+            AI Investigation Center
+          </CardTitle>
+          <p className="text-gray-400 text-xs mt-1">
+            Select a case and run fraud pattern analysis, executive summary, and wallet monitoring.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <p className="text-xs text-gray-400">No case selected.</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
   const [running, setRunning] = useState(false);
   const [statuses, setStatuses] = useState({}); // key -> 'idle'|'running'|'done'|'error'
   const [lastRun, setLastRun] = useState(null);
