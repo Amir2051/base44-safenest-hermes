@@ -12,6 +12,7 @@ import { Progress } from "@/components/ui/progress";
 import {
   Shield, CheckCircle, Loader2, Gift, Users, Sparkles, ArrowRight
 } from "lucide-react";
+import { trackEvent } from "@/lib/analytics";
 import { toast } from "sonner";
 
 export default function Onboarding() {
@@ -121,6 +122,8 @@ export default function Onboarding() {
         // No referral code
         completeOnboarding();
       } else {
+        // Referral applied — track signup event
+        trackEvent('signup', { event_category: 'onboarding' });
         // Referral applied
         queryClient.invalidateQueries({ queryKey: ['user'] });
         toast.success('🎁 ' + data.message, { duration: 8000 });

@@ -4,6 +4,10 @@ import App from '@/App.jsx'
 import '@/index.css'
 import { ThemeProvider } from '@/lib/ThemeContext'
 import { initPrivacyGuard, isAnalyticsAllowed, isChatAllowed } from '@/lib/PrivacyGuard'
+import { initGA } from '@/lib/analytics'
+
+// Initialize GA4 once at app startup (guarded by consent)
+initGA()
 
 // Initialize privacy protection before anything else loads
 initPrivacyGuard({

@@ -10,6 +10,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { trackEvent } from "@/lib/analytics";
+
 const STRIPE_MONTHLY_URL = "https://buy.stripe.com/9B6cMY2jw0Ia3I7feh4gg0b";
 const STRIPE_YEARLY_URL = "https://buy.stripe.com/3cI14g9LY2Qi1zZ1nr4gg0c";
 
@@ -38,6 +40,7 @@ export default function Subscription() {
 
   const handleSubscribe = (url) => {
     setLoading(true);
+    trackEvent('subscription_started', { event_category: 'subscription' });
     const finalUrl = user 
       ? `${url}?prefilled_email=${encodeURIComponent(user.email)}&client_reference_id=${user.id}`
       : url;

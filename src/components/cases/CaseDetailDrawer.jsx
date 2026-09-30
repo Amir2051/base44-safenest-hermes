@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { base44 } from "@/api/base44Client";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { trackEvent } from "@/lib/analytics";
 
 export default function CaseDetailDrawer({ caseId, isOpen, onClose }) {
   const [editedCase, setEditedCase] = useState(null);
@@ -37,6 +38,7 @@ export default function CaseDetailDrawer({ caseId, isOpen, onClose }) {
       queryClient.invalidateQueries({ queryKey: ['client-cases'] });
       queryClient.invalidateQueries({ queryKey: ['client-case', caseId] });
       toast.success("Case updated");
+      trackEvent('case_updated', { event_category: 'cases' });
     },
     onError: (err) => toast.error("Failed to update: " + err.message)
   });

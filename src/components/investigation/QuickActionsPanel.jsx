@@ -4,9 +4,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Zap, AlertTriangle, Send, Eye, FileText, ArrowUpCircle,
-  RefreshCw, Shield, Link2
+  RefreshCw, Shield, Link2, Sparkles
 } from "lucide-react";
 import { toast } from "sonner";
+import { startHermesInvestigation } from "@/hooks/useHermesInvestigation";
 
 export default function QuickActionsPanel({ caseData, onUpdate, onOpenResponse, onOpenTracking }) {
   const activeCase = caseData;
@@ -14,8 +15,10 @@ export default function QuickActionsPanel({ caseData, onUpdate, onOpenResponse, 
   const entityName = activeCase?._entityName || activeCase?.entity_name || 'MyCase';
   const [loading, setLoading] = useState(false);
   const [lastResults, setLastResults] = useState(null);
+  const [hermesLoading, setHermesLoading] = useState(false);
   // Race-guard: ignore stale responses if the user clicks again or the case changes.
   const runIdRef = useRef(0);
+  const hermesLoadingRef = useRef(false);
 
   const handleEscalate = async () => {
     setLoading(true);
@@ -41,6 +44,55 @@ export default function QuickActionsPanel({ caseData, onUpdate, onOpenResponse, 
       toast.error("Failed to escalate case");
     }
     setLoading(false);
+  };
+
+  const handleRunHermes = async () => {
+    if (!caseId) {
+      toast.error("Open a case before running Hermes investigation");
+      return;
+    }
+    const runId = ++runIdRef.current;
+    setLoading(true);
+    hermesLoadingRef.current = true;
+    const toastId = toast.loading("Starting Hermes investigation...");
+    trackEvent('investigation_started', {
+      event_category: 'investigations',
+      event_label: caseData.case_number || caseData.id || 'unknown'
+    });
+    try {
+      const result = await startHermesInvestigation({
+        caseId: caseData.id,
+        targetType: "case",
+        targetValue: caseData.case_number || caseData.id,
+        investigationType: "web",
+      });
+      if (runId !== runIdRef.current) return;
+
+      if (result.error) {
+        toast.error(`Investigation error: ${result.error}`, { id: toastId });
+      } else if (result.success) {
+        const status = result.status || "started";
+        toast.success(`Hermes investigation ${status} (ID: ${result.investigation_id || result.hermes_investigation_id})`, { id: toastId });
+        if (status === "completed") {
+          trackEvent('investigation_completed', {
+            event_category: 'investigations',
+            event_label: caseData.case_number || caseData.id || 'unknown'
+          });
+        }
+        if (onUpdate) onUpdate();
+      } else {
+        toast.info(`Status: ${result.status || "unknown"}`, { id: toastId });
+      }
+    } catch (e) {
+      if (runId === runIdRef.current) {
+        toast.error("Failed to start investigation: " + (e?.message || "unknown error"), { id: toastId });
+      }
+    } finally {
+      if (runId === runIdRef.current) {
+        setLoading(false);
+        hermesLoadingRef.current = false;
+      }
+    }
   };
 
   const handleRunAnalysis = async () => {
@@ -154,6 +206,17 @@ export default function QuickActionsPanel({ caseData, onUpdate, onOpenResponse, 
           >
             <ArrowUpCircle className="w-4 h-4" />
             <span className="text-[10px]">Escalate Case</span>
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRunHermes}
+            disabled={loading}
+            className="bg-[#1a2332] border-emerald-500/20 hover:bg-emerald-500/10 text-emerald-400 flex flex-col items-center h-auto py-2 gap-1"
+          >
+            <Sparkles className={`w-4 h-4 ${hermesLoading ? 'animate-spin' : ''}`} />
+            <span className="text-[10px]">{hermesLoading ? 'Investigating...' : 'Hermes AI'}</span>
           </Button>
         </div>
       </CardContent>

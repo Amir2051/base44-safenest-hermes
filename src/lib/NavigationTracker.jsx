@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { useAuth } from './AuthContext';
 import { base44 } from '@/api/base44Client';
 import { pagesConfig } from '@/pages.config';
+import { pageView } from './analytics';
 
 export default function NavigationTracker() {
     const location = useLocation();
@@ -45,6 +46,11 @@ export default function NavigationTracker() {
             });
         }
     }, [location, isAuthenticated, Pages, mainPageKey]);
+
+    // Track page views in GA4 (only when analytics consent is granted)
+    useEffect(() => {
+        pageView(location.pathname);
+    }, [location.pathname]);
 
     return null;
 }

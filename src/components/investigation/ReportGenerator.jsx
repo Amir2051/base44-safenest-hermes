@@ -66,6 +66,7 @@ export default function ReportGenerator({ selectedCase }) {
 
       setReport(response.data.data.report);
       toast.success("Investigation report generated");
+      trackEvent('report_generated', { event_category: 'reports' });
     } catch (error) {
       toast.error("Failed to generate report: " + error.message);
     }

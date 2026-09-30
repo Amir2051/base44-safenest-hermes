@@ -88,9 +88,12 @@ export function blockFingerprinting() {
 }
 
 // ── Block network requests to known trackers ─────────────────────────────────
+// Note: googletagmanager.com is EXCLUDED from this blocklist because
+// Google Analytics (GA4) is an allowed tracker when the user has
+// granted analytics consent. The analytics utility (src/lib/analytics.js)
+// handles consent gating before loading GA or sending events.
 const BLOCKED_DOMAINS = [
   "google-analytics.com",
-  "googletagmanager.com",
   "doubleclick.net",
   "facebook.com/tr",
   "connect.facebook.net",
@@ -149,11 +152,11 @@ export function blockTrackerRequests() {
 }
 
 // ── Remove existing tracker scripts from DOM ─────────────────────────────────
+// googletagmanager.com and gtag are excluded because GA4 is an allowed
+// tracker when the user has granted analytics consent.
 export function removeTrackerScripts() {
   const trackerPatterns = [
     "google-analytics",
-    "googletagmanager",
-    "gtag",
     "fbq",
     "twq",
     "hotjar",
@@ -191,6 +194,8 @@ export function removeTrackerScripts() {
 }
 
 // ── Block global tracking globals ────────────────────────────────────────────
+// gtag is EXCLUDED from blocking because GA4 uses it when analytics consent
+// is granted. The analytics utility manages gtag lifecycle.
 export function blockTrackingGlobals() {
   const noop = () => {};
   const noopProxy = new Proxy(noop, {
@@ -198,8 +203,8 @@ export function blockTrackingGlobals() {
     apply: () => undefined,
   });
 
-  // Block common tracker globals
-  ["ga", "gtag", "fbq", "twq", "_hsq", "mixpanel", "amplitude", "heap"].forEach(global => {
+  // Block common tracker globals (gtag excluded — handled by analytics utility)
+  ["ga", "fbq", "twq", "_hsq", "mixpanel", "amplitude", "heap"].forEach(global => {
     if (!window[global]) {
       Object.defineProperty(window, global, {
         get: () => noopProxy,

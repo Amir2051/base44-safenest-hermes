@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Loader2, Sparkles, Upload, FileText } from "lucide-react";
 import { toast } from "sonner";
+import { trackEvent } from "@/lib/analytics";
 
 export default function CreateCaseDialog({ onClose, onSuccess }) {
   const [loading, setLoading] = useState(false);
@@ -178,6 +179,7 @@ export default function CreateCaseDialog({ onClose, onSuccess }) {
       if (response.data.error) throw new Error(response.data.error);
 
       toast.success("Case created successfully!");
+      trackEvent('case_created', { event_category: 'cases' });
       onSuccess();
     } catch (error) {
       console.error('Create case error:', error);
