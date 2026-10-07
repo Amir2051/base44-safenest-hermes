@@ -21,7 +21,13 @@
     },
     "source": {
       "type": "string",
-      "enum": ["dateno", "data_catalog", "open_data", "public_registry", "other"],
+      "enum": [
+        "dateno",
+        "data_catalog",
+        "open_data",
+        "public_registry",
+        "other"
+      ],
       "default": "dateno",
       "description": "Source system that produced the enrichment record."
     },
@@ -68,22 +74,30 @@
     },
     "dataset_datatypes": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Data types returned by the data source."
     },
     "dataset_formats": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "File/data formats returned by the data source."
     },
     "dataset_tags": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Tags returned by the data source."
     },
     "dataset_topics": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Topics returned by the data source."
     },
     "dataset_license_id": {
@@ -104,12 +118,16 @@
     },
     "source_countries": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Countries returned by the source (e.g. ISO ids)."
     },
     "source_macroregions": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Macroregions returned by the source."
     },
     "source_software": {
@@ -118,7 +136,9 @@
     },
     "source_langs": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Source languages if reported."
     },
     "hit_id": {
@@ -143,29 +163,51 @@
     },
     "match_type": {
       "type": "string",
-      "enum": ["exact", "fuzzy", "catalog_search", "other"],
+      "enum": [
+        "exact",
+        "fuzzy",
+        "catalog_search",
+        "other"
+      ],
       "description": "Type of match that produced this enrichment record."
     },
     "matched_fields": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Fields that produced the match."
     },
     "confidence": {
       "type": "string",
-      "enum": ["lead_only", "low", "medium", "high", "verified"],
+      "enum": [
+        "lead_only",
+        "low",
+        "medium",
+        "high",
+        "verified"
+      ],
       "default": "lead_only",
       "description": "Enrichment confidence. Default lead_only; escalated ONLY by a later explicit workflow."
     },
     "classification": {
       "type": "string",
-      "enum": ["unconfirmed", "lead", "leading_indicator", "corroborated", "confirmed"],
+      "enum": [
+        "unconfirmed",
+        "lead",
+        "leading_indicator",
+        "corroborated",
+        "confirmed"
+      ],
       "default": "unconfirmed",
       "description": "Never auto-fraud. Default unconfirmed; only a later explicit workflow may escalate."
     },
     "strategy": {
       "type": "string",
-      "enum": ["controlled", "auto"],
+      "enum": [
+        "controlled",
+        "auto"
+      ],
       "description": "Enrichment strategy that produced this record."
     },
     "sources_count": {
@@ -175,9 +217,17 @@
     "raw": {
       "type": "object",
       "description": "Optional raw source record payload (kept untouched, never transformed into fraud claims)."
+    },
+    "run_id": {
+      "type": "string",
+      "description": "ID of the individual investigation execution (InvestigationRun). Nullable today; set to the unique run_id when InvestigationRun is implemented.",
+      "default": null
     }
   },
-  "required": ["tenant_id", "case_id"],
+  "required": [
+    "tenant_id",
+    "case_id"
+  ],
   "rls": {
     "create": {
       "data.tenant_id": "{{user.data.tenant_id}}"

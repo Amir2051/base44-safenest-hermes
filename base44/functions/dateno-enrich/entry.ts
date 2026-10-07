@@ -137,7 +137,7 @@ export default async function (req: Request) {
     }
 
     const payload = await req.json().catch(() => ({}));
-    const { action, target, targets, strategy, jurisdiction, country, limit, offset, searchFields, maxSearches } = payload || {};
+    const { action, target, targets, strategy, jurisdiction, country, limit, offset, searchFields, maxSearches, case_id, investigation_id, run_id } = payload || {};
 
     // ── Health/status check ────────────────────────────────────────────────
     if (!action || action === "status" || action === "configured") {
@@ -339,6 +339,56 @@ export default async function (req: Request) {
     allRecords.length = 0;
     allRecords.push(...deduped);
 
+    // ── run-scoped persistence to DatenoLedger ────────────────────────────────
+    // Idempotent write with key: tenant_id + case_id + investigation_id + run_id
+    //     + dataset_id + hit_id. Run #1 and Run #2 write to independent records.
+    // Failure here NEVER fails the primary investigation (always wrapped in try/catch).
+    // tenant_id comes from the authenticated server-side user context; never from
+    // the browser payload. case_id, investigation_id, run_id come from the
+    // hermesStart invocation payload and are server-side assertions.
+    const datenoLedgerWrites = allRecords.map((rec) => {
+      return base44.asServiceRole.entities.DatenoLedger.create({
+        tenant_id: user.tenant_id || user.id,
+        case_id: case_id || null,
+        investigation_id: investigation_id || null,
+        run_id: run_id || null, // nullable today; set to InvestigationRun.run_id when implemented
+        source: "dateno",
+        source_name: rec?.source_name || null,
+        source_url: rec?.source_url || null,
+        source_record_id: rec?.dataset_id || rec?.dataset_int_id || null,
+        retrieved_at: rec?.retrieved_at || new Date().toISOString(),
+        dataset_id: rec?.dataset_id || null,
+        dataset_int_id: rec?.dataset_int_id || null,
+        dataset_title: rec?.dataset_title || null,
+        dataset_description: rec?.dataset_description || null,
+        dataset_datatypes: rec?.dataset_datatypes || [],
+        dataset_formats: rec?.dataset_formats || [],
+        dataset_tags: rec?.dataset_tags || [],
+        dataset_topics: rec?.dataset_topics || [],
+        dataset_license_id: rec?.dataset_license_id || null,
+        dataset_num_resources: rec?.dataset_num_resources ?? null,
+        dataset_has_archive: rec?.dataset_has_archive ?? false,
+        source_uid: rec?.source_uid || null,
+        source_countries: rec?.source_countries || [],
+        source_macroregions: rec?.source_macroregions || [],
+        source_software: rec?.source_software || null,
+        source_langs: rec?.source_langs || [],
+        hit_id: rec?.hit_id || null,
+        hit_score: rec?.hit_score ?? null,
+        hit_index: rec?.hit_index || null,
+        jurisdiction: rec?.jurisdiction || jurisdiction || null,
+        country: rec?.country || country || null,
+        match_type: "catalog_search",
+        matched_fields: [],
+        confidence: "lead_only",   // never auto-confirmed
+        classification: "unconfirmed", // never auto-fraud
+        strategy: strategy || "controlled",
+        raw: rec?.raw || null,
+      }).catch(() => null); // never throw; failure isolated
+    });
+    const ledgerResults = await Promise.all(datenoLedgerWrites);
+    const ledgerCreated = ledgerResults.filter((r): r is { id?: string } => r !== null).length;
+
     // ── Aggregation response (excludes any secret values) ──────────────────
     const responseData = {
       total: allRecords.length,
@@ -384,6 +434,7 @@ export default async function (req: Request) {
         target: null,
         investigation_case_id: null,
         investigation_target_id: null,
+        run_id: run_id || null,
       })),
       warnings,
     };
