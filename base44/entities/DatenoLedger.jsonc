@@ -1,0 +1,197 @@
+{
+  "name": "DatenoLedger",
+  "type": "object",
+  "description": "SafeNestT OS dedicated provenance ledger for server-side data discovery/enrichment results (e.g. Dateno public-data catalog enrichment). Holds intelligence provenance from external data sources so investigations can preserve source records, dataset metadata, hit metadata, jurisdiction/country context, and matching information WITHOUT treating catalog matches as fraud findings.",
+  "properties": {
+    "tenant_id": {
+      "type": "string",
+      "description": "Server-side multi-tenant isolation id set on create from the current user's tenant."
+    },
+    "case_id": {
+      "type": "string",
+      "description": "ID of the related investigation case."
+    },
+    "investigation_id": {
+      "type": "string",
+      "description": "ID of the investigation workflow run (InvestigationRun) that produced this enrichment record."
+    },
+    "investigation_target_id": {
+      "type": "string",
+      "description": "ID of the investigation target (InvestigationTarget) that the enrichment was keyed to."
+    },
+    "source": {
+      "type": "string",
+      "enum": ["dateno", "data_catalog", "open_data", "public_registry", "other"],
+      "default": "dateno",
+      "description": "Source system that produced the enrichment record."
+    },
+    "source_name": {
+      "type": "string",
+      "description": "Human-readable name of the source (e.g. the dataset/source title returned by the API)."
+    },
+    "source_url": {
+      "type": "string",
+      "description": "URL of the source/dataset (e.g. the dataset url from the API response)."
+    },
+    "source_record_id": {
+      "type": "string",
+      "description": "Stable identifier of the record within the source system (e.g. API dataset entry id/int_id)."
+    },
+    "source_record_order": {
+      "type": "integer",
+      "description": "Optional source-side ordering of the record."
+    },
+    "retrieved_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 timestamp when the enrichment record was retrieved from the source."
+    },
+    "dataset_id": {
+      "type": "string",
+      "description": "Dataset id returned by the data source."
+    },
+    "dataset_int_id": {
+      "type": "string",
+      "description": "Dataset internal int_id returned by the data source."
+    },
+    "dataset_title": {
+      "type": "string",
+      "description": "Dataset title returned by the data source."
+    },
+    "dataset_url": {
+      "type": "string",
+      "description": "Dataset url returned by the data source."
+    },
+    "dataset_description": {
+      "type": "string",
+      "description": "Dataset description returned by the data source."
+    },
+    "dataset_datatypes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Data types returned by the data source."
+    },
+    "dataset_formats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "File/data formats returned by the data source."
+    },
+    "dataset_tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Tags returned by the data source."
+    },
+    "dataset_topics": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Topics returned by the data source."
+    },
+    "dataset_license_id": {
+      "type": "string",
+      "description": "License id returned by the data source."
+    },
+    "dataset_num_resources": {
+      "type": "number",
+      "description": "Number of resources returned by the data source."
+    },
+    "dataset_has_archive": {
+      "type": "boolean",
+      "description": "Whether the dataset has an archive (if provided by the source)."
+    },
+    "source_uid": {
+      "type": "string",
+      "description": "Source uid returned by the data source."
+    },
+    "source_countries": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Countries returned by the source (e.g. ISO ids)."
+    },
+    "source_macroregions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Macroregions returned by the source."
+    },
+    "source_software": {
+      "type": "string",
+      "description": "Source software/portal name if reported by the data source."
+    },
+    "source_langs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Source languages if reported."
+    },
+    "hit_id": {
+      "type": "string",
+      "description": "Hit identifier returned by the source (e.g. _id)."
+    },
+    "hit_score": {
+      "type": "number",
+      "description": "Source hit score/match score (e.g. _score)."
+    },
+    "hit_index": {
+      "type": "string",
+      "description": "Index name of the hit (e.g. _index)."
+    },
+    "jurisdiction": {
+      "type": "string",
+      "description": "Jurisdiction of the enrichment (e.g. AE, US, or null/global)."
+    },
+    "country": {
+      "type": "string",
+      "description": "Country code / coverage context of the enrichment (e.g. US, AE, or null/global)."
+    },
+    "match_type": {
+      "type": "string",
+      "enum": ["exact", "fuzzy", "catalog_search", "other"],
+      "description": "Type of match that produced this enrichment record."
+    },
+    "matched_fields": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Fields that produced the match."
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["lead_only", "low", "medium", "high", "verified"],
+      "default": "lead_only",
+      "description": "Enrichment confidence. Default lead_only; escalated ONLY by a later explicit workflow."
+    },
+    "classification": {
+      "type": "string",
+      "enum": ["unconfirmed", "lead", "leading_indicator", "corroborated", "confirmed"],
+      "default": "unconfirmed",
+      "description": "Never auto-fraud. Default unconfirmed; only a later explicit workflow may escalate."
+    },
+    "strategy": {
+      "type": "string",
+      "enum": ["controlled", "auto"],
+      "description": "Enrichment strategy that produced this record."
+    },
+    "sources_count": {
+      "type": "integer",
+      "description": "Number of sources surfaced by the source response (if provided)."
+    },
+    "raw": {
+      "type": "object",
+      "description": "Optional raw source record payload (kept untouched, never transformed into fraud claims)."
+    }
+  },
+  "required": ["tenant_id", "case_id"],
+  "rls": {
+    "create": {
+      "data.tenant_id": "{{user.data.tenant_id}}"
+    },
+    "read": {
+      "data.tenant_id": "{{user.data.tenant_id}}"
+    },
+    "update": {
+      "data.tenant_id": "{{user.data.tenant_id}}"
+    },
+    "delete": {
+      "user_condition": {
+        "role": "admin"
+      }
+    }
+  }
+}

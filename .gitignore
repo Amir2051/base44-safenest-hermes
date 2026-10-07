@@ -30,3 +30,8 @@ dist-ssr
 .env
 base44/.app.jsonc
 pat.env
+
+# Dateno local secrets (server-side only, never expose to frontend)
+datenoApi.env
+.dateno_cmd.yaml
+*.dateno.env
