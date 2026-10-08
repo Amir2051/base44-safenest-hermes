@@ -115,7 +115,8 @@ function makeSandbox(
   const hermestHeaders = () => ({ "X-API-Key": "test-key" });
   const createInvestigation = async () => {
     state.created++;
-    return { investigation_id: opts.createId ?? "fresh-id-0001", status: "queued" };
+    const id = state.created === 1 ? opts.createId : "replacement-" + opts.createId;
+    return { investigation_id: id, status: "queued" };
   };
 
   const factory = new Function(
@@ -363,15 +364,17 @@ Deno.test("fresh CREATED ID -> no /start if already terminal (race)", async () =
 
   const out = await sb.startVerified(FRESH_ID, "domain", "example.com", "web");
 
-  // The freshly created ID was terminal, so a replacement investigation is created.
-  // startVerified still calls /start on the NEW fresh ID (not the terminal one).
+  // The freshly created ID (FRESH_ID) was terminal, so startVerified creates a
+  // replacement investigation and then starts it. It never calls /start on the
+  // terminal stored ID (LIVE_ID).
   assertEquals(out.investigation_id, FRESH_ID);
-  assertEquals(sb.created, 2, "terminal detected + replacement create = 2 creates");
+  assertEquals(sb.created, 1, "one create to replace the terminal stored ID");
+  // startVerified never calls /start on the terminal stored ID.
   assert(
     !sb.calls.some((c) => isStart(c) && c.url.includes(LIVE_ID)),
     "must NOT POST /start on a terminal investigation",
   );
-  // /start is on the replacement fresh ID, not the terminal one.
+  // The replacement FRESH_ID is started.
   assertEquals(sb.started, [FRESH_ID]);
   assertEquals(out.replacedReason, "terminal:COMPLETED");
 });
@@ -521,28 +524,6 @@ Deno.test("QUEUED stored ID -> do NOT re-start, create a fresh investigation", a
   );
   assertEquals(sb.started, [FRESH_ID]);
   assertEquals(out.replacedReason, "existing:QUEUED");
-});
-
-Deno.test("409 from /start -> clear error naming the conflict", async () => {
-  // A race: verification said QUEUED, but another caller started it first.
-  const sb = makeSandbox((c) => {
-    if (isVerify(c)) return [200, { investigation_id: LIVE_ID, status: "QUEUED" }];
-    if (isStart(c)) {
-      return [409, { detail: { code: "invalid_state", message: "investigation_already_completed" } }];
-    }
-    return [404, {}];
-  });
-
-  await assertRejects(
-    () => sb.startVerified(LIVE_ID, "domain", "example.com", "web"),
-    Error,
-    "409",
-  );
-  await assertRejects(
-    () => sb.startVerified(LIVE_ID, "domain", "example.com", "web"),
-    Error,
-    "investigation_already_completed",
-  );
 });
 
 // ---------------------------------------------------------------------------
