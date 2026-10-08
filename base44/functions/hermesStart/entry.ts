@@ -190,9 +190,15 @@ async function createInvestigation(targetType, targetValue, investigationType = 
         console.log("Hermes: stored investigation " + storedId + " is RUNNING; attaching without restart");
         return { investigation_id: storedId, staleRecovered: false, staleId: null, status };
       } else if (exists) {
-        // QUEUED or any other non-terminal state -> normal start behaviour.
-        const started = await startInvestigation(storedId);
-        return { investigation_id: storedId, staleRecovered: false, staleId: null, status: started?.status ?? status };
+        // QUEUED or any other non-terminal state -> do NOT re-start,
+        // the investigation is already active and a second /start would
+        // return 409 investigation_already_completed. Treat the existing
+        // (non-RUNNING) run as a completed/existing handle: create a
+        // fresh investigation instead of querying it again. Preserved
+        // rows are never deleted or overwritten.
+        console.warn("Hermes: stored investigation " + storedId + " is " + status +
+          " (non-terminal, already active); creating a fresh investigation");
+        replacedReason = "existing:" + status;
       } else {
         // 404: the stored ID's row is gone (destroyed table, wiped DB, ...).
         console.warn("Hermes: stored investigation " + storedId + " is stale (404); creating a fresh investigation");
