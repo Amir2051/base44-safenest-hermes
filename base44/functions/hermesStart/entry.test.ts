@@ -152,8 +152,12 @@ const LIVE_ID = "42cafb339f05400094c77616046b1532";
 const FRESH_ID = "aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa";
 
 function isVerify(c: Call) { return c.method === "GET" && !c.url.includes("/start"); }
-function isStart(c: Call) { return c.url.includes("/start"); }
-function isCreate(c: Call) { return c.method === "POST" && /\/v1\/investigations(\?|$)/.test(c.url); }
+
+/** Check if a call is a POST to /v1/investigations/{id}/start */
+function isStart(c: Call): boolean { return c.method === "POST" && /^\S*\/v1\/investigations\/[^/]+\/start(?:\?|$)/.test(c.url); }
+
+/** Check if a call is a POST to /v1/investigations (create) */
+function isCreate(c: Call): boolean { return c.method === "POST" && /^\S*\/v1\/investigations(?:\?|$)/.test(c.url); }
 
 // ---------------------------------------------------------------------------
 // Tests

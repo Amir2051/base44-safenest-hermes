@@ -1061,9 +1061,26 @@ async function handleStart(req) {
           investigationType,
           caseId,
         );
-        const newId = recreated?.investigation_id;
-        if (!newId) throw new Error("Hermes: no investigation_id returned from replacement create");
-        hermesInvestigationId = newId;
+        const replacementId = recreated?.investigation_id;
+
+        if (!replacementId) {
+          throw new Error("Hermes: replacement investigation did not return an investigation_id");
+        }
+
+        const replacementCheck = await investigationExists(replacementId);
+
+        if (!replacementCheck.exists) {
+          throw new Error("Hermes: replacement investigation could not be verified");
+        }
+
+        if (TERMINAL.includes(replacementCheck.status)) {
+          throw new Error(
+            "Hermes: replacement investigation is also terminal (" + replacementCheck.status +
+            "); cannot recover",
+          );
+        }
+
+        hermesInvestigationId = replacementId;
       }
       await startInvestigation(hermesInvestigationId);
       hermesStatus = "QUEUED";
