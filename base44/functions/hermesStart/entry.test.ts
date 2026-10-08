@@ -353,6 +353,130 @@ Deno.test("RUNNING stored ID -> does NOT POST /start again", async () => {
   assertEquals(sb.created, 0, "must not create a replacement while RUNNING");
 });
 
+Deno.test("fresh CREATED ID -> no /start if already terminal (race)", async () => {
+  const sb = makeSandbox((c) => {
+    if (isVerify(c)) return [200, { investigation_id: LIVE_ID, status: "COMPLETED" }];
+    if (isCreate(c)) return [200, { investigation_id: FRESH_ID, status: "queued" }];
+    if (isStart(c)) return [200, { status: "running" }];
+    return [404, {}];
+  }, { createId: FRESH_ID });
+
+  const out = await sb.startVerified(FRESH_ID, "domain", "example.com", "web");
+
+  // The freshly created ID was terminal, so a replacement investigation is created.
+  // startVerified still calls /start on the NEW fresh ID (not the terminal one).
+  assertEquals(out.investigation_id, FRESH_ID);
+  assertEquals(sb.created, 2, "terminal detected + replacement create = 2 creates");
+  assert(
+    !sb.calls.some((c) => isStart(c) && c.url.includes(LIVE_ID)),
+    "must NOT POST /start on a terminal investigation",
+  );
+  // /start is on the replacement fresh ID, not the terminal one.
+  assertEquals(sb.started, [FRESH_ID]);
+  assertEquals(out.replacedReason, "terminal:COMPLETED");
+});
+
+Deno.test("COMPLETED stored ID -> fresh ID, no /start on old ID", async () => {
+  const sb = makeSandbox((c) => {
+    if (isVerify(c)) return [200, { investigation_id: LIVE_ID, status: "COMPLETED" }];
+    if (isCreate(c)) return [200, { investigation_id: FRESH_ID, status: "queued" }];
+    if (isStart(c)) return [200, { status: "running" }];
+    return [404, {}];
+  }, { createId: FRESH_ID });
+
+  const out = await sb.startVerified(LIVE_ID, "domain", "example.com", "web");
+
+  assertEquals(out.investigation_id, FRESH_ID);
+  assertEquals(out.staleRecovered, true);
+  assertEquals(out.staleId, LIVE_ID);
+  assertEquals(sb.created, 1);
+  assert(
+    !sb.calls.some((c) => isStart(c) && c.url.includes(LIVE_ID)),
+    "must NOT POST /start on a COMPLETED investigation",
+  );
+  assertEquals(sb.started, [FRESH_ID]);
+  assertEquals(out.replacedReason, "terminal:COMPLETED");
+});
+
+Deno.test("FAILED stored ID -> fresh ID", async () => {
+  const sb = makeSandbox((c) => {
+    if (isVerify(c)) return [200, { investigation_id: LIVE_ID, status: "FAILED" }];
+    if (isCreate(c)) return [200, { investigation_id: FRESH_ID, status: "queued" }];
+    if (isStart(c)) return [200, { status: "running" }];
+    return [404, {}];
+  }, { createId: FRESH_ID });
+
+  const out = await sb.startVerified(LIVE_ID, "domain", "example.com", "web");
+
+  assertEquals(out.investigation_id, FRESH_ID);
+  assertEquals(out.staleRecovered, true);
+  assertEquals(sb.created, 1);
+  assert(
+    !sb.calls.some((c) => isStart(c) && c.url.includes(LIVE_ID)),
+    "must NOT POST /start on a FAILED investigation",
+  );
+  assertEquals(out.replacedReason, "terminal:FAILED");
+});
+
+Deno.test("CANCELLED stored ID -> fresh ID", async () => {
+  const sb = makeSandbox((c) => {
+    if (isVerify(c)) return [200, { investigation_id: LIVE_ID, status: "CANCELLED" }];
+    if (isCreate(c)) return [200, { investigation_id: FRESH_ID, status: "queued" }];
+    if (isStart(c)) return [200, { status: "running" }];
+    return [404, {}];
+  }, { createId: FRESH_ID });
+
+  const out = await sb.startVerified(LIVE_ID, "domain", "example.com", "web");
+
+  assertEquals(out.investigation_id, FRESH_ID);
+  assertEquals(out.staleRecovered, true);
+  assertEquals(sb.created, 1);
+  assert(
+    !sb.calls.some((c) => isStart(c) && c.url.includes(LIVE_ID)),
+    "must NOT POST /start on a CANCELLED investigation",
+  );
+  assertEquals(out.replacedReason, "terminal:CANCELLED");
+});
+
+Deno.test("QUEUED stored ID -> no duplicate /start", async () => {
+  const sb = makeSandbox((c) => {
+    if (isVerify(c)) return [200, { investigation_id: LIVE_ID, status: "QUEUED" }];
+    if (isCreate(c)) return [200, { investigation_id: FRESH_ID, status: "queued" }];
+    if (isStart(c)) return [200, { status: "running" }];
+    return [404, {}];
+  }, { createId: FRESH_ID });
+
+  const out = await sb.startVerified(LIVE_ID, "domain", "example.com", "web");
+
+  assertEquals(out.investigation_id, FRESH_ID, "a QUEUED id is replaced, not started");
+  assertEquals(out.staleRecovered, true, "a QUEUED id is treated as existing");
+  assertEquals(out.staleId, LIVE_ID);
+  assertEquals(sb.created, 1, "must create exactly one replacement");
+  assert(
+    !sb.calls.some((c) => isStart(c) && c.url.includes(LIVE_ID)),
+    "must NOT POST /start on a QUEUED investigation",
+  );
+  assertEquals(sb.started, [FRESH_ID]);
+  assertEquals(out.replacedReason, "existing:QUEUED");
+});
+
+Deno.test("RUNNING stored ID -> does NOT POST /start again", async () => {
+  const sb = makeSandbox((c) => {
+    if (isVerify(c)) return [200, { investigation_id: LIVE_ID, status: "RUNNING" }];
+    if (isCreate(c)) return [200, { investigation_id: FRESH_ID, status: "queued" }];
+    if (isStart(c)) return [200, { status: "running" }];
+    return [404, {}];
+  }, { createId: FRESH_ID });
+
+  const out = await sb.startVerified(LIVE_ID, "domain", "example.com", "web");
+
+  assertEquals(out.investigation_id, LIVE_ID);
+  assertEquals(out.status, "RUNNING");
+  assertEquals(out.staleRecovered, false);
+  assertEquals(sb.started.length, 0, "must not POST /start on a RUNNING investigation");
+  assertEquals(sb.created, 0, "must not create a replacement while RUNNING");
+});
+
 Deno.test("FAILED stored ID -> creates a fresh investigation", async () => {
   const sb = makeSandbox((c) => {
     if (isVerify(c)) return [200, { investigation_id: LIVE_ID, status: "FAILED" }];

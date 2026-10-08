@@ -308,12 +308,34 @@ async function getReport(investigationId) {
  * Returns the final result with findings and report.
  */
 async function runInvestigation(targetType, targetValue, investigationType = "web", pollIntervalMs = 3000, maxPolls = 120, caseId = null) {
+  // Top-level TERMINAL status values for Hermes investigation runs. Shared with
+  // startVerified() so both guard paths agree on which HEX statuses are terminal.
+  const TERMINAL = ["COMPLETED", "FAILED", "CANCELLED"];
+
   // 1. Create
   const created = await createInvestigation(targetType, targetValue, investigationType, caseId);
-  const investigationId = created.investigation_id;
+  let investigationId = created.investigation_id;
   if (!investigationId) throw new Error("Hermes: no investigation_id in response");
 
-  // 2. Start
+  // 2. Start — verify the fresh ID is not already terminal in Hermes before
+  //    starting. This prevents a 409 when the same target is started twice
+  //    concurrently and one run produces a terminal ID.
+  const existsCheck = await investigationExists(investigationId);
+  if (existsCheck.exists && TERMINAL.includes(existsCheck.status)) {
+    console.warn(
+      "Hermes: freshly created investigation " + investigationId +
+      " is already terminal (" + existsCheck.status + "); requesting a fresh ID",
+    );
+    const recreated = await createInvestigation(
+      targetType,
+      targetValue,
+      investigationType,
+      caseId,
+    );
+    const newId = recreated?.investigation_id;
+    if (!newId) throw new Error("Hermes: no investigation_id returned from replacement create");
+    investigationId = newId;
+  }
   await startInvestigation(investigationId);
 
   // 3. Poll for completion
@@ -1020,9 +1042,28 @@ async function handleStart(req) {
     } else {
       console.log(`Hermes: creating investigation for case=${caseId} target=${effectiveTargetValue} type=${effectiveTargetType} (source: ${targetSource})`);
       const created = await createInvestigation(effectiveTargetType, effectiveTargetValue, investigationType, caseId);
-      hermesInvestigationId = created.investigation_id;
+      let hermesInvestigationId = created.investigation_id;
       if (!hermesInvestigationId) {
         throw new Error("Hermes: no investigation_id returned");
+      }
+      // Verify-then-start: a freshly created ID can be terminal if two
+      // concurrent runs target the same case and one produces a terminal ID.
+      const TERMINAL = ["COMPLETED", "FAILED", "CANCELLED"];
+      const existsCheck = await investigationExists(hermesInvestigationId);
+      if (existsCheck.exists && TERMINAL.includes(existsCheck.status)) {
+        console.warn(
+          "Hermes: freshly created investigation " + hermesInvestigationId +
+          " is already terminal (" + existsCheck.status + "); requesting a fresh ID",
+        );
+        const recreated = await createInvestigation(
+          effectiveTargetType,
+          effectiveTargetValue,
+          investigationType,
+          caseId,
+        );
+        const newId = recreated?.investigation_id;
+        if (!newId) throw new Error("Hermes: no investigation_id returned from replacement create");
+        hermesInvestigationId = newId;
       }
       await startInvestigation(hermesInvestigationId);
       hermesStatus = "QUEUED";
