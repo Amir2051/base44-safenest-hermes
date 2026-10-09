@@ -88,7 +88,7 @@
         },
         {
           "assigned_staff": {
-            "$contains": "{{user.id}}"
+            "$all": ["{{user.id}}"]
           }
         }
       ]
@@ -121,7 +121,7 @@
         },
         {
           "assigned_staff": {
-            "$contains": "{{user.id}}"
+            "$all": ["{{user.id}}"]
           }
         }
       ]
