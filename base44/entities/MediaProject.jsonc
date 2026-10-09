@@ -121,7 +121,7 @@
         },
         {
           "data.assigned_staff": {
-            "$all": ["{{user.id}}"]
+            "$in": ["{{user.id}}"]
           }
         }
       ]
