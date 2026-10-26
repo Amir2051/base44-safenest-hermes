@@ -733,8 +733,8 @@ async function persistEntityGraph(
               hermes_investigation_id: hermesInvestigationId,
             },
             entity_id: caseId,
-          }).catch((error) => { if (!isDuplicate(error)) throw error; });
-        } catch (error) { if (!isDuplicate(error)) throw error; }
+          }).catch((error: unknown) => { if (!isDuplicate(error)) throw error; });
+        } catch (error: unknown) { if (!isDuplicate(error)) throw error; }
       }
     }
 
@@ -1275,7 +1275,7 @@ async function handleStart(req) {
  * row is updated in place, while evidence and graph records use stable IDs.
  * A thrown error leaves the poll retryable and is surfaced to the caller.
  */
-async function persistAsyncHermesResult(base44, record, statusResult, findings, report) {
+async function persistAsyncHermesResult(base44: any, record: any, statusResult: any, findings: any[], report: any) {
   const status = String(statusResult?.status || "UNKNOWN").toUpperCase();
   const terminal = ["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELLED", "TIMEOUT"].includes(status);
   if (!terminal) return { persisted: false, reason: "not_terminal" };
@@ -1284,7 +1284,7 @@ async function persistAsyncHermesResult(base44, record, statusResult, findings, 
   const caseId = record.case_id;
   const investigationId = record.hermes_investigation_id;
   const now = new Date().toISOString();
-  const evidence = Array.isArray(statusResult?.evidence)
+  const evidence: any[] = Array.isArray(statusResult?.evidence)
     ? statusResult.evidence
     : (Array.isArray(report?.evidence) ? report.evidence : []);
   const result = {
@@ -1354,7 +1354,7 @@ async function persistAsyncHermesResult(base44, record, statusResult, findings, 
     const caseEntities = base44.asServiceRole.entities;
     const targetEntity = caseEntities[caseType] || caseEntities.InvestigationCase;
     if (targetEntity?.update) {
-      const caseUpdate = {
+      const caseUpdate: Record<string, unknown> = {
         hermes_investigation_id: investigationId,
         hermes_status: status,
         last_activity: now,
