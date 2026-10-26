@@ -1427,7 +1427,7 @@ async function handleStatusGet(base44, user, investigationId) {
       // Failed/cancelled investigations may legitimately have no report.
     }
 
-    let persistence = { persisted: false, reason: "not_terminal" };
+    let persistence: Record<string, unknown> = { persisted: false, reason: "not_terminal" };
     if (terminal && linkedRecord) {
       persistence = await persistAsyncHermesResult(base44, linkedRecord, statusResult, findings, report);
     }
