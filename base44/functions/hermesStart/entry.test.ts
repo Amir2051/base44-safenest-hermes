@@ -455,16 +455,17 @@ Deno.test("QUEUED stored ID -> no duplicate /start", async () => {
 
   const out = await sb.startVerified(LIVE_ID, "domain", "example.com", "web");
 
-  assertEquals(out.investigation_id, FRESH_ID, "a QUEUED id is replaced, not started");
-  assertEquals(out.staleRecovered, true, "a QUEUED id is treated as existing");
-  assertEquals(out.staleId, LIVE_ID);
-  assertEquals(sb.created, 1, "must create exactly one replacement");
+  assertEquals(out.investigation_id, LIVE_ID, "a verified QUEUED id is reused");
+  assertEquals(out.status, "QUEUED");
+  assertEquals(out.staleRecovered, false);
+  assertEquals(out.staleId, null);
+  assertEquals(sb.created, 0, "must not create a duplicate investigation");
   assert(
     !sb.calls.some((c) => isStart(c) && c.url.includes(LIVE_ID)),
     "must NOT POST /start on a QUEUED investigation",
   );
-  assertEquals(sb.started, [FRESH_ID]);
-  assertEquals(out.replacedReason, "existing:QUEUED");
+  assertEquals(sb.started, []);
+  assertEquals(out.replacedReason, undefined);
 });
 
 Deno.test("RUNNING stored ID -> does NOT POST /start again", async () => {
@@ -517,17 +518,18 @@ Deno.test("QUEUED stored ID -> do NOT re-start, create a fresh investigation", a
 
   const out = await sb.startVerified(LIVE_ID, "domain", "example.com", "web");
 
-  assertEquals(out.investigation_id, FRESH_ID, "a QUEUED id is NOT started; a fresh one is created");
-  assertEquals(out.staleRecovered, true, "a QUEUED id is treated as existing");
-  assertEquals(out.staleId, LIVE_ID);
-  assertEquals(sb.created, 1, "must create exactly one replacement");
+  assertEquals(out.investigation_id, LIVE_ID, "a verified QUEUED id is reused");
+  assertEquals(out.status, "QUEUED");
+  assertEquals(out.staleRecovered, false);
+  assertEquals(out.staleId, null);
+  assertEquals(sb.created, 0, "must not create a duplicate investigation");
   // Crucially: /start must never be aimed at the QUEUED investigation.
   assert(
     !sb.calls.some((c) => isStart(c) && c.url.includes(LIVE_ID)),
     "must NOT POST /start on a QUEUED investigation",
   );
-  assertEquals(sb.started, [FRESH_ID]);
-  assertEquals(out.replacedReason, "existing:QUEUED");
+  assertEquals(sb.started, []);
+  assertEquals(out.replacedReason, undefined);
 });
 
 // ---------------------------------------------------------------------------
@@ -717,8 +719,192 @@ Deno.test("no undefined identifier: isCaseNumberLike appears as a definition", (
     "waitForCompletion is a const, not a function — checked separately");
 });
 
+
+const persistAsyncHermesResultSrc = extractFunction("persistAsyncHermesResult").replace(/: any\[\]/g, "").replace(/: any/g, "").replace(/: Record<string, unknown>/g, "");
+const persistEntityGraphSrc = extractFunction("persistEntityGraph");
+const handleStatusGetSrc = extractFunction("handleStatusGet").replace(/let persistence: Record<string, unknown>/, "let persistence");
+
+function makePersistenceHarness() {
+  const updated: Array<{ id: string; data: Record<string, unknown> }> = [];
+  const evidenceRows = new Map<string, Record<string, unknown>>();
+  const caseUpdates: Array<{ id: string; data: Record<string, unknown> }> = [];
+  const graphCalls: Array<{ caseId: string; investigationId: string; findings: unknown[]; evidence: unknown[] }> = [];
+  const base44 = {
+    asServiceRole: {
+      entities: {
+        HermesInvestigation: {
+          update: async (id: string, data: Record<string, unknown>) => { updated.push({ id, data }); },
+        },
+        CaseEvidenceItem: {
+          create: async (data: Record<string, unknown>) => {
+            const id = String(data.id);
+            if (evidenceRows.has(id)) throw new Error("duplicate key conflict");
+            evidenceRows.set(id, data);
+          },
+        },
+        InvestigationCase: {
+          update: async (id: string, data: Record<string, unknown>) => { caseUpdates.push({ id, data }); },
+        },
+      },
+    },
+  };
+  const persist = new Function(
+    "resolveCaseEntity", "mapFindingTypeToCategory", "mapEvidenceData",
+    "mapConfidence", "persistEntityGraph",
+    persistAsyncHermesResultSrc + "\nreturn persistAsyncHermesResult;",
+  )(
+    async (caseId: string) => ({ id: caseId, _entityName: "InvestigationCase" }),
+    () => "evidence",
+    () => ({ claim: "verified test claim" }),
+    () => "high",
+    async (_base44: unknown, caseId: string, investigationId: string, findings: unknown[], evidence: unknown[]) => {
+      graphCalls.push({ caseId, investigationId, findings, evidence });
+    },
+  ) as (base44: unknown, record: Record<string, unknown>, status: Record<string, unknown>, findings: unknown[], report: unknown) => Promise<unknown>;
+  const record = { id: "base44-row-1", case_id: "case-123", hermes_investigation_id: "hermes-123" };
+  const status = {
+    status: "COMPLETED", completed_at: "2026-10-26T00:00:00.000Z",
+    target: { type: "domain", value: "example.com" },
+  };
+  const findings = [{
+    id: "finding-1", finding_type: "VERIFIED_EVIDENCE", title: "Test finding",
+    evidence_ids: ["evidence-1"], confidence: 0.9,
+  }];
+  const report = {
+    summary: "Test report",
+    evidence: [{ id: "file-1", evidence_id: "evidence-1", source: "test-source" }],
+  };
+  return { persist, base44, record, status, findings, report, updated, evidenceRows, caseUpdates, graphCalls };
+}
+
+Deno.test("async completion persists findings and report to the correct Hermes row", async () => {
+  const h = makePersistenceHarness();
+  const result = await h.persist(h.base44, h.record, h.status, h.findings, h.report) as Record<string, unknown>;
+  assertEquals(result.persisted, true);
+  assertEquals(h.updated.length, 1);
+  assertEquals(h.updated[0].id, "base44-row-1", "update uses Base44 row ID, not Hermes ID");
+  const saved = JSON.parse(String(h.updated[0].data.result));
+  assertEquals(saved.findings, h.findings);
+  assertEquals(saved.report, h.report);
+  assertEquals(h.updated[0].data.status, "COMPLETED");
+});
+
+Deno.test("repeated completion polls reuse stable evidence IDs and case association", async () => {
+  const h = makePersistenceHarness();
+  await h.persist(h.base44, h.record, h.status, h.findings, h.report);
+  await h.persist(h.base44, h.record, h.status, h.findings, h.report);
+  assertEquals(h.evidenceRows.size, 1, "second poll must not create a duplicate evidence row");
+  const row = [...h.evidenceRows.values()][0];
+  assertEquals(row.id, "ev-hermes-123-evidence-1");
+  assertEquals(row.case_id, "case-123");
+  assertEquals(h.graphCalls.length, 2, "graph persistence is retried on every terminal poll");
+  assertEquals(h.graphCalls[0].caseId, "case-123");
+  assertEquals(h.graphCalls[0].investigationId, "hermes-123");
+});
+
+Deno.test("graph persistence uses stable per-investigation IDs and preserves case linkage", () => {
+  assert(persistEntityGraphSrc.includes("const isDuplicate"), "duplicate-only error handling must exist");
+  assert(persistEntityGraphSrc.includes("gn-ev-${hermesInvestigationId}-"), "evidence nodes must use stable investigation-scoped IDs");
+  assert(persistEntityGraphSrc.includes("gn-fnd-${hermesInvestigationId}-"), "finding nodes must use stable investigation-scoped IDs");
+  assert(persistEntityGraphSrc.includes("ge-fe-${hermesInvestigationId}-"), "finding/evidence edges must use stable investigation-scoped IDs");
+  assert(persistEntityGraphSrc.includes("case_id: caseId"), "graph rows must remain linked to the authorized case");
+  assert(persistEntityGraphSrc.includes("if (!isDuplicate(error)) throw error"), "non-duplicate graph write failures must propagate for retry");
+});
+
+Deno.test("status endpoint rejects an unlinked investigation for a non-admin", async () => {
+  let hermesReads = 0;
+  const handler = new Function(
+    "ensureHermesEntity", "isAdmin", "authorizeCaseAccess", "isConfigured",
+    "getInvestigation", "getFindings", "getReport", "persistAsyncHermesResult",
+    handleStatusGetSrc + "\nreturn handleStatusGet;",
+  )(
+    async () => ({ filter: async () => [] }),
+    () => false,
+    async () => ({ authorized: false }),
+    () => true,
+    async () => { hermesReads++; return { status: "COMPLETED" }; },
+    async () => [],
+    async () => ({}),
+    async () => ({ persisted: true }),
+  ) as (base44: unknown, user: unknown, id: string) => Promise<Response>;
+  const response = await handler({}, { id: "user-1" }, "hermes-123");
+  assertEquals(response.status, 403);
+  assertEquals(hermesReads, 0, "authorization must happen before Hermes data access");
+});
+
+Deno.test("status endpoint rejects an investigation linked to another user's case", async () => {
+  const handler = new Function(
+    "ensureHermesEntity", "isAdmin", "authorizeCaseAccess", "isConfigured",
+    "getInvestigation", "getFindings", "getReport", "persistAsyncHermesResult",
+    handleStatusGetSrc + "\nreturn handleStatusGet;",
+  )(
+    async () => ({ filter: async () => [{ id: "row-1", case_id: "case-other", hermes_investigation_id: "hermes-123" }] }),
+    () => false,
+    async () => ({ authorized: false }),
+    () => true,
+    async () => ({ status: "COMPLETED" }),
+    async () => [],
+    async () => ({}),
+    async () => ({ persisted: true }),
+  ) as (base44: unknown, user: unknown, id: string) => Promise<Response>;
+  const response = await handler({}, { id: "user-1" }, "hermes-123");
+  assertEquals(response.status, 403);
+});
+
+
+Deno.test("a failed persistence poll can be retried and then succeeds", async () => {
+  let persistenceAttempts = 0;
+  const handler = new Function(
+    "ensureHermesEntity", "isAdmin", "authorizeCaseAccess", "isConfigured",
+    "getInvestigation", "getFindings", "getReport", "persistAsyncHermesResult",
+    handleStatusGetSrc + "\nreturn handleStatusGet;",
+  )(
+    async () => ({ filter: async () => [{ id: "row-1", case_id: "case-123", hermes_investigation_id: "hermes-123" }] }),
+    () => false,
+    async () => ({ authorized: true }),
+    () => true,
+    async () => ({ status: "COMPLETED", completed_at: "2026-10-26T00:00:00.000Z" }),
+    async () => [{ id: "finding-1" }],
+    async () => ({ summary: "test report" }),
+    async () => {
+      persistenceAttempts++;
+      if (persistenceAttempts === 1) throw new Error("temporary write failure");
+      return { persisted: true, status: "COMPLETED", findings_count: 1 };
+    },
+  ) as (base44: unknown, user: unknown, id: string) => Promise<Response>;
+  const first = await handler({}, { id: "user-1" }, "hermes-123");
+  assertEquals(first.status, 502);
+  const second = await handler({}, { id: "user-1" }, "hermes-123");
+  assertEquals(second.status, 200);
+  const body = await second.json();
+  assertEquals(body.persistence.persisted, true);
+  assertEquals(persistenceAttempts, 2);
+});
+
+Deno.test("status endpoint returns retryable failure when persistence fails", async () => {
+  const handler = new Function(
+    "ensureHermesEntity", "isAdmin", "authorizeCaseAccess", "isConfigured",
+    "getInvestigation", "getFindings", "getReport", "persistAsyncHermesResult",
+    handleStatusGetSrc + "\nreturn handleStatusGet;",
+  )(
+    async () => ({ filter: async () => [{ id: "row-1", case_id: "case-123", hermes_investigation_id: "hermes-123" }] }),
+    () => false,
+    async () => ({ authorized: true }),
+    () => true,
+    async () => ({ status: "COMPLETED", completed_at: "2026-10-26T00:00:00.000Z" }),
+    async () => [],
+    async () => ({ summary: "test report" }),
+    async () => { throw new Error("database temporarily unavailable"); },
+  ) as (base44: unknown, user: unknown, id: string) => Promise<Response>;
+  const response = await handler({}, { id: "user-1" }, "hermes-123");
+  assertEquals(response.status, 502);
+  const body = await response.json();
+  assertEquals(body.retryable, true);
+  assertEquals(body.investigation_id, "hermes-123");
+});
+
 // --- tiny assertion helpers (no test framework needed) ---------------------
-function assert(cond: unknown, msg = "assertion failed") {
+function assert(cond: unknown, msg = "assertion failed"): asserts cond {
   if (!cond) throw new Error(msg);
 }
 function assertEquals(actual: unknown, expected: unknown, msg?: string) {

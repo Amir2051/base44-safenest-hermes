@@ -190,15 +190,11 @@ async function createInvestigation(targetType, targetValue, investigationType = 
         console.log("Hermes: stored investigation " + storedId + " is RUNNING; attaching without restart");
         return { investigation_id: storedId, staleRecovered: false, staleId: null, status };
       } else if (exists) {
-        // QUEUED or any other non-terminal state -> do NOT re-start,
-        // the investigation is already active and a second /start would
-        // return 409 investigation_already_completed. Treat the existing
-        // (non-RUNNING) run as a completed/existing handle: create a
-        // fresh investigation instead of querying it again. Preserved
-        // rows are never deleted or overwritten.
-        console.warn("Hermes: stored investigation " + storedId + " is " + status +
-          " (non-terminal, already active); creating a fresh investigation");
-        replacedReason = "existing:" + status;
+        // QUEUED and other non-terminal states are existing work. Reuse the
+        // verified ID rather than starting or duplicating the investigation.
+        console.log("Hermes: stored investigation " + storedId + " is " + status +
+          "; attaching without restart");
+        return { investigation_id: storedId, staleRecovered: false, staleId: null, status };
       } else {
         // 404: the stored ID's row is gone (destroyed table, wiped DB, ...).
         console.warn("Hermes: stored investigation " + storedId + " is stale (404); creating a fresh investigation");
@@ -693,6 +689,10 @@ async function persistEntityGraph(
   findings: Array<Record<string, unknown>>,
   evidenceArray: Array<Record<string, unknown>> = [],
 ) {
+  // Stable IDs make retries safe. Ignore only duplicate-key conflicts; any
+  // other failure must propagate so the status endpoint can return retryable.
+  const isDuplicate = (error: unknown) =>
+    /already exists|duplicate|conflict|unique/i.test(String((error as any)?.message || error));
   for (const finding of findings) {
     const ftype = String(finding.finding_type || finding.type || "");
     const target: any = finding.target;
@@ -733,8 +733,8 @@ async function persistEntityGraph(
               hermes_investigation_id: hermesInvestigationId,
             },
             entity_id: caseId,
-          }).catch(() => {});
-        } catch {}
+          }).catch((error: unknown) => { if (!isDuplicate(error)) throw error; });
+        } catch (error: unknown) { if (!isDuplicate(error)) throw error; }
       }
     }
 
@@ -760,8 +760,8 @@ async function persistEntityGraph(
           created_at: new Date().toISOString(),
         },
         entity_id: caseId,
-      }).catch(() => {});
-    } catch {}
+      }).catch((error) => { if (!isDuplicate(error)) throw error; });
+    } catch (error) { if (!isDuplicate(error)) throw error; }
 
     // Build entity node from finding target/indicator
     if (target) {
@@ -782,8 +782,8 @@ async function persistEntityGraph(
             hermes_investigation_id: hermesInvestigationId,
           },
           entity_id: caseId,
-        }).catch(() => {});
-      } catch {}
+        }).catch((error) => { if (!isDuplicate(error)) throw error; });
+      } catch (error) { if (!isDuplicate(error)) throw error; }
     }
   }
 
@@ -812,8 +812,8 @@ async function persistEntityGraph(
             hermes_investigation_id: hermesInvestigationId,
           },
           entity_id: caseId,
-        }).catch(() => {});
-      } catch {}
+        }).catch((error) => { if (!isDuplicate(error)) throw error; });
+      } catch (error) { if (!isDuplicate(error)) throw error; }
     }
 
     // Edge: finding → entity node
@@ -835,8 +835,8 @@ async function persistEntityGraph(
             hermes_investigation_id: hermesInvestigationId,
           },
           entity_id: caseId,
-        }).catch(() => {});
-      } catch {}
+        }).catch((error) => { if (!isDuplicate(error)) throw error; });
+      } catch (error) { if (!isDuplicate(error)) throw error; }
     }
 
     // Edge: evidence → entity node (for provider-backed evidence)
@@ -862,8 +862,8 @@ async function persistEntityGraph(
               hermes_investigation_id: hermesInvestigationId,
             },
             entity_id: caseId,
-          }).catch(() => {});
-        } catch {}
+          }).catch((error) => { if (!isDuplicate(error)) throw error; });
+        } catch (error) { if (!isDuplicate(error)) throw error; }
       }
     }
   }
@@ -1268,6 +1268,105 @@ async function handleStart(req) {
   });
 }
 
+/**
+ * Persist terminal results fetched by the async status poller.
+ *
+ * This function is intentionally safe to run repeatedly: the Hermes reference
+ * row is updated in place, while evidence and graph records use stable IDs.
+ * A thrown error leaves the poll retryable and is surfaced to the caller.
+ */
+async function persistAsyncHermesResult(base44: any, record: any, statusResult: any, findings: any[], report: any) {
+  const status = String(statusResult?.status || "UNKNOWN").toUpperCase();
+  const terminal = ["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELLED", "TIMEOUT"].includes(status);
+  if (!terminal) return { persisted: false, reason: "not_terminal" };
+  if (!record?.case_id) throw new Error("Cannot persist Hermes result without linked case_id");
+
+  const caseId = record.case_id;
+  const investigationId = record.hermes_investigation_id;
+  const now = new Date().toISOString();
+  const evidence: any[] = Array.isArray(statusResult?.evidence)
+    ? statusResult.evidence
+    : (Array.isArray(report?.evidence) ? report.evidence : []);
+  const result = {
+    ...statusResult,
+    status,
+    findings: Array.isArray(findings) ? findings : [],
+    report: report || null,
+    evidence,
+  };
+  const update = {
+    status,
+    completed_at: statusResult?.completed_at || now,
+    findings_count: result.findings.length,
+    result: JSON.stringify(result),
+    error: statusResult?.error ? JSON.stringify(statusResult.error) : null,
+  };
+
+  // Update the existing reference row by its actual Base44 row ID. Never
+  // assume the Hermes ID is also the Base44 entity primary key.
+  const hermesEntity = base44.asServiceRole.entities.HermesInvestigation;
+  await hermesEntity.update(record.id, update);
+
+  // Persist finding-backed evidence with stable IDs so repeated polls cannot
+  // create duplicate rows. Hermes may omit the evidence payload; in that case
+  // retain the finding/report result and skip evidence rows we cannot resolve.
+  for (const finding of result.findings) {
+    const findingType = finding.finding_type || finding.type || "";
+    const evidenceIds = finding.evidence_ids || finding.evidence || [];
+    if (!Array.isArray(evidenceIds)) continue;
+    for (const evidenceId of evidenceIds) {
+      const ev = evidence.find((item) =>
+        String(item?.evidence_id || item?.evidenceId || item?.id || "") === String(evidenceId)
+      );
+      if (!ev) continue;
+      const id = `ev-${investigationId}-${String(evidenceId).slice(0, 12)}`;
+      try {
+        await base44.asServiceRole.entities.CaseEvidenceItem.create({
+          id,
+          case_id: caseId,
+          evidence_file_id: ev.id || null,
+          category: mapFindingTypeToCategory(findingType, ev),
+          data: mapEvidenceData(finding, ev, findingType),
+          source: "extracted",
+          confidence: mapConfidence(finding.confidence || ev.confidence || 0),
+          relevance: findingType === "VERIFIED_EVIDENCE" ? "primary" : "supporting",
+          analyst_note: `${findingType}: ${finding.title || finding.claim || ""}`.slice(0, 500),
+          status: "confirmed",
+        });
+      } catch (error) {
+        // Stable-ID conflict means an earlier poll already persisted this item.
+        // Other errors must be visible so the caller can retry the poll.
+        const message = String(error?.message || error);
+        if (!/already exists|duplicate|conflict|unique/i.test(message)) throw error;
+      }
+    }
+  }
+
+  // Existing graph helper uses stable node/edge IDs and isolates duplicate creates.
+  if (result.findings.length) {
+    await persistEntityGraph(base44, caseId, investigationId, result.findings, evidence);
+  }
+
+  // Update the linked case type if it supports the existing investigation fields.
+  const caseEntity = await resolveCaseEntity(base44, caseId);
+  if (caseEntity?.id) {
+    const caseType = caseEntity._entityName || caseEntity.entityType || "InvestigationCase";
+    const caseEntities = base44.asServiceRole.entities;
+    const targetEntity = caseEntities[caseType] || caseEntities.InvestigationCase;
+    if (targetEntity?.update) {
+      const caseUpdate: Record<string, unknown> = {
+        hermes_investigation_id: investigationId,
+        hermes_status: status,
+        last_activity: now,
+        findings_count: result.findings.length,
+      };
+      if (report) caseUpdate.hermes_report = JSON.stringify(report);
+      await targetEntity.update(caseEntity.id, caseUpdate);
+    }
+  }
+  return { persisted: true, status, findings_count: result.findings.length };
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/hermes/status — Get investigation status
 // Called as: handleStatusGet(base44, user, investigationId) — used by both HTTP GET and function invocation
@@ -1282,25 +1381,29 @@ async function handleStatusGet(base44, user, investigationId) {
     return Response.json({ error: "investigation_id is required" }, { status: 400 });
   }
 
-  // --- Security: verify user has access to this investigation ---
+  // --- Security: fail closed unless the investigation is linked to an authorized case ---
+  let linkedRecord = null;
   try {
     const hermesEntity = await ensureHermesEntity(base44);
     if (hermesEntity) {
-      const records = await hermesEntity.filter({ hermes_investigation_id: investigationId }).catch(() => []);
-      if (records.length > 0) {
-        const record = records[0];
-        const caseId = record.case_id;
-        if (caseId) {
-          const access = await authorizeCaseAccess(base44, user.id, caseId);
-          if (!access.authorized) {
-            return Response.json({ error: "Access denied to this investigation" }, { status: 403 });
-          }
-        }
-      }
+      const records = await hermesEntity.filter({ hermes_investigation_id: investigationId });
+      linkedRecord = Array.isArray(records) ? records[0] || null : null;
     }
-  } catch {
-    if (!isAdmin(user)) {
-      console.warn(`Hermes status: could not verify access for user=${user.id} inv=${investigationId}`);
+  } catch (error) {
+    console.warn(`Hermes status: authorization lookup failed for user=${user.id} inv=${investigationId}: ${String(error?.message || error)}`);
+    if (!isAdmin(user)) return Response.json({ error: "Unable to verify investigation access" }, { status: 503 });
+  }
+  if (!linkedRecord && !isAdmin(user)) {
+    return Response.json({ error: "Access denied: investigation is not linked to an authorized case" }, { status: 403 });
+  }
+  if (linkedRecord) {
+    if (!linkedRecord.case_id) {
+      if (!isAdmin(user)) return Response.json({ error: "Access denied: investigation has no linked case" }, { status: 403 });
+    } else {
+      const access = await authorizeCaseAccess(base44, user.id, linkedRecord.case_id);
+      if (!access.authorized && !isAdmin(user)) {
+        return Response.json({ error: "Access denied to this investigation" }, { status: 403 });
+      }
     }
   }
 
@@ -1311,22 +1414,44 @@ async function handleStatusGet(base44, user, investigationId) {
 
   try {
     const statusResult = await getInvestigation(investigationId);
-    const findings = await getFindings(investigationId).catch(() => []);
-    const report = await getReport(investigationId).catch(() => null);
+    const status = String(statusResult.status || "UNKNOWN").toUpperCase();
+    const terminal = ["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELLED", "TIMEOUT"].includes(status);
+    // Don't swallow result-fetch failures for terminal runs: persistence must
+    // be retried on the next poll rather than silently reporting success.
+    const findings = await getFindings(investigationId);
+    let report = null;
+    try {
+      report = await getReport(investigationId);
+    } catch (reportError) {
+      if (status === "COMPLETED" || status === "COMPLETED_WITH_ERRORS") throw reportError;
+      // Failed/cancelled investigations may legitimately have no report.
+    }
+
+    let persistence: Record<string, unknown> = { persisted: false, reason: "not_terminal" };
+    if (terminal && linkedRecord) {
+      persistence = await persistAsyncHermesResult(base44, linkedRecord, statusResult, findings, report);
+    }
 
     return Response.json({
       success: true,
       investigation_id: investigationId,
-      status: statusResult.status || "UNKNOWN",
+      status,
       target: statusResult.target || null,
       findings_count: findings.length,
       findings: findings.slice(0, 50),
       report: report || null,
       error: statusResult.error || null,
       completed_at: statusResult.completed_at || null,
+      persistence,
     });
   } catch (e) {
-    return Response.json({ error: e.message, investigation_id: investigationId }, { status: 502 });
+    console.error(`Hermes status/persistence failed for ${investigationId}:`, String(e?.message || e));
+    return Response.json({
+      error: "Unable to fetch or persist investigation results; retry the status poll",
+      detail: String(e?.message || e),
+      investigation_id: investigationId,
+      retryable: true,
+    }, { status: 502 });
   }
 }
 
