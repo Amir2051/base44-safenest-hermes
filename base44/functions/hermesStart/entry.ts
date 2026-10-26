@@ -689,6 +689,10 @@ async function persistEntityGraph(
   findings: Array<Record<string, unknown>>,
   evidenceArray: Array<Record<string, unknown>> = [],
 ) {
+  // Stable IDs make retries safe. Ignore only duplicate-key conflicts; any
+  // other failure must propagate so the status endpoint can return retryable.
+  const isDuplicate = (error: unknown) =>
+    /already exists|duplicate|conflict|unique/i.test(String((error as any)?.message || error));
   for (const finding of findings) {
     const ftype = String(finding.finding_type || finding.type || "");
     const target: any = finding.target;
@@ -729,8 +733,8 @@ async function persistEntityGraph(
               hermes_investigation_id: hermesInvestigationId,
             },
             entity_id: caseId,
-          }).catch(() => {});
-        } catch {}
+          }).catch((error) => { if (!isDuplicate(error)) throw error; });
+        } catch (error) { if (!isDuplicate(error)) throw error; }
       }
     }
 
@@ -756,8 +760,8 @@ async function persistEntityGraph(
           created_at: new Date().toISOString(),
         },
         entity_id: caseId,
-      }).catch(() => {});
-    } catch {}
+      }).catch((error) => { if (!isDuplicate(error)) throw error; });
+    } catch (error) { if (!isDuplicate(error)) throw error; }
 
     // Build entity node from finding target/indicator
     if (target) {
@@ -778,8 +782,8 @@ async function persistEntityGraph(
             hermes_investigation_id: hermesInvestigationId,
           },
           entity_id: caseId,
-        }).catch(() => {});
-      } catch {}
+        }).catch((error) => { if (!isDuplicate(error)) throw error; });
+      } catch (error) { if (!isDuplicate(error)) throw error; }
     }
   }
 
@@ -808,8 +812,8 @@ async function persistEntityGraph(
             hermes_investigation_id: hermesInvestigationId,
           },
           entity_id: caseId,
-        }).catch(() => {});
-      } catch {}
+        }).catch((error) => { if (!isDuplicate(error)) throw error; });
+      } catch (error) { if (!isDuplicate(error)) throw error; }
     }
 
     // Edge: finding → entity node
@@ -831,8 +835,8 @@ async function persistEntityGraph(
             hermes_investigation_id: hermesInvestigationId,
           },
           entity_id: caseId,
-        }).catch(() => {});
-      } catch {}
+        }).catch((error) => { if (!isDuplicate(error)) throw error; });
+      } catch (error) { if (!isDuplicate(error)) throw error; }
     }
 
     // Edge: evidence → entity node (for provider-backed evidence)
@@ -858,8 +862,8 @@ async function persistEntityGraph(
               hermes_investigation_id: hermesInvestigationId,
             },
             entity_id: caseId,
-          }).catch(() => {});
-        } catch {}
+          }).catch((error) => { if (!isDuplicate(error)) throw error; });
+        } catch (error) { if (!isDuplicate(error)) throw error; }
       }
     }
   }
@@ -1273,7 +1277,7 @@ async function handleStart(req) {
  */
 async function persistAsyncHermesResult(base44, record, statusResult, findings, report) {
   const status = String(statusResult?.status || "UNKNOWN").toUpperCase();
-  const terminal = ["COMPLETED", "FAILED", "CANCELLED"].includes(status);
+  const terminal = ["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELLED", "TIMEOUT"].includes(status);
   if (!terminal) return { persisted: false, reason: "not_terminal" };
   if (!record?.case_id) throw new Error("Cannot persist Hermes result without linked case_id");
 
