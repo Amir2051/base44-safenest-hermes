@@ -851,6 +851,36 @@ Deno.test("status endpoint rejects an investigation linked to another user's cas
   assertEquals(response.status, 403);
 });
 
+
+Deno.test("a failed persistence poll can be retried and then succeeds", async () => {
+  let persistenceAttempts = 0;
+  const handler = new Function(
+    "ensureHermesEntity", "isAdmin", "authorizeCaseAccess", "isConfigured",
+    "getInvestigation", "getFindings", "getReport", "persistAsyncHermesResult",
+    handleStatusGetSrc + "\\nreturn handleStatusGet;",
+  )(
+    async () => ({ filter: async () => [{ id: "row-1", case_id: "case-123", hermes_investigation_id: "hermes-123" }] }),
+    () => false,
+    async () => ({ authorized: true }),
+    () => true,
+    async () => ({ status: "COMPLETED", completed_at: "2026-10-26T00:00:00.000Z" }),
+    async () => [{ id: "finding-1" }],
+    async () => ({ summary: "test report" }),
+    async () => {
+      persistenceAttempts++;
+      if (persistenceAttempts === 1) throw new Error("temporary write failure");
+      return { persisted: true, status: "COMPLETED", findings_count: 1 };
+    },
+  ) as (base44: unknown, user: unknown, id: string) => Promise<Response>;
+  const first = await handler({}, { id: "user-1" }, "hermes-123");
+  assertEquals(first.status, 502);
+  const second = await handler({}, { id: "user-1" }, "hermes-123");
+  assertEquals(second.status, 200);
+  const body = await second.json();
+  assertEquals(body.persistence.persisted, true);
+  assertEquals(persistenceAttempts, 2);
+});
+
 Deno.test("status endpoint returns retryable failure when persistence fails", async () => {
   const handler = new Function(
     "ensureHermesEntity", "isAdmin", "authorizeCaseAccess", "isConfigured",
