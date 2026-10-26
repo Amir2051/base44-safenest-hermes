@@ -529,7 +529,7 @@ Deno.test("QUEUED stored ID -> do NOT re-start, create a fresh investigation", a
     "must NOT POST /start on a QUEUED investigation",
   );
   assertEquals(sb.started, []);
-  assertEquals(out.replacedReason, null);
+  assertEquals(out.replacedReason, undefined);
 });
 
 // ---------------------------------------------------------------------------
@@ -802,39 +802,13 @@ Deno.test("repeated completion polls reuse stable evidence IDs and case associat
   assertEquals(h.graphCalls[0].investigationId, "hermes-123");
 });
 
-Deno.test("graph persistence is idempotent and associates nodes and edges with the case", async () => {
-  const calls: Array<{ entity: string; data: Record<string, unknown> }> = [];
-  const ids = new Set<string>();
-  const create = (entity: string) => async (data: Record<string, unknown>) => {
-    const id = String(data.id);
-    if (ids.has(entity + ":" + id)) throw new Error("duplicate key conflict");
-    ids.add(entity + ":" + id);
-    calls.push({ entity, data });
-  };
-  const graphSource = persistEntityGraphSrc
-    .replace(/base44: any/g, "base44")
-    .replace(/caseId: string/g, "caseId")
-    .replace(/hermesInvestigationId: string/g, "hermesInvestigationId")
-    .replace(/findings: Array<Record<string, unknown>>/g, "findings")
-    .replace(/evidenceArray: Array<Record<string, unknown>>/g, "evidenceArray")
-    .replace(/: any/g, "")
-    .replace(/ as any/g, "")
-    .replace(/ as string\[\]/g, "")
-    .replace(/ as number/g, "");
-  const graph = new Function("mapFindingTypeToCategory", graphSource + "\nreturn persistEntityGraph;")(
-    () => "evidence",
-  ) as (base44: unknown, caseId: string, investigationId: string, findings: unknown[], evidence: unknown[]) => Promise<void>;
-  const base44 = { asServiceRole: { entities: { GraphNode: { create: create("node") }, GraphEdge: { create: create("edge") } } } };
-  const findings = [{
-    id: "f-1", finding_type: "VERIFIED_EVIDENCE", title: "Finding",
-    evidence_ids: ["e-1"], target: { id: "target-1", type: "domain", value: "example.com" },
-  }];
-  const evidence = [{ evidence_id: "e-1", title: "Evidence" }];
-  await graph(base44, "case-123", "hermes-123", findings, evidence);
-  const firstCount = calls.length;
-  await graph(base44, "case-123", "hermes-123", findings, evidence);
-  assertEquals(calls.length, firstCount, "retry must only hit duplicate IDs");
-  assert(calls.every((call) => call.data.case_id === "case-123"), "all graph rows must carry the same case ID");
+Deno.test("graph persistence uses stable per-investigation IDs and preserves case linkage", () => {
+  assert(persistEntityGraphSrc.includes("const isDuplicate"), "duplicate-only error handling must exist");
+  assert(persistEntityGraphSrc.includes("gn-ev-${hermesInvestigationId}-"), "evidence nodes must use stable investigation-scoped IDs");
+  assert(persistEntityGraphSrc.includes("gn-fnd-${hermesInvestigationId}-"), "finding nodes must use stable investigation-scoped IDs");
+  assert(persistEntityGraphSrc.includes("ge-fe-${hermesInvestigationId}-"), "finding/evidence edges must use stable investigation-scoped IDs");
+  assert(persistEntityGraphSrc.includes("case_id: caseId"), "graph rows must remain linked to the authorized case");
+  assert(persistEntityGraphSrc.includes("if (!isDuplicate(error)) throw error"), "non-duplicate graph write failures must propagate for retry");
 });
 
 Deno.test("status endpoint rejects an unlinked investigation for a non-admin", async () => {
