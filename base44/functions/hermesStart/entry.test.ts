@@ -857,7 +857,7 @@ Deno.test("a failed persistence poll can be retried and then succeeds", async ()
   const handler = new Function(
     "ensureHermesEntity", "isAdmin", "authorizeCaseAccess", "isConfigured",
     "getInvestigation", "getFindings", "getReport", "persistAsyncHermesResult",
-    handleStatusGetSrc + "\\nreturn handleStatusGet;",
+    handleStatusGetSrc + "\nreturn handleStatusGet;",
   )(
     async () => ({ filter: async () => [{ id: "row-1", case_id: "case-123", hermes_investigation_id: "hermes-123" }] }),
     () => false,
