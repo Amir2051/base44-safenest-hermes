@@ -1415,7 +1415,7 @@ async function handleStatusGet(base44, user, investigationId) {
   try {
     const statusResult = await getInvestigation(investigationId);
     const status = String(statusResult.status || "UNKNOWN").toUpperCase();
-    const terminal = ["COMPLETED", "FAILED", "CANCELLED"].includes(status);
+    const terminal = ["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELLED", "TIMEOUT"].includes(status);
     // Don't swallow result-fetch failures for terminal runs: persistence must
     // be retried on the next poll rather than silently reporting success.
     const findings = await getFindings(investigationId);
@@ -1423,7 +1423,7 @@ async function handleStatusGet(base44, user, investigationId) {
     try {
       report = await getReport(investigationId);
     } catch (reportError) {
-      if (status === "COMPLETED") throw reportError;
+      if (status === "COMPLETED" || status === "COMPLETED_WITH_ERRORS") throw reportError;
       // Failed/cancelled investigations may legitimately have no report.
     }
 
