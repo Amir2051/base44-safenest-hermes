@@ -722,7 +722,7 @@ Deno.test("no undefined identifier: isCaseNumberLike appears as a definition", (
 
 const persistAsyncHermesResultSrc = extractFunction("persistAsyncHermesResult");
 const persistEntityGraphSrc = extractFunction("persistEntityGraph");
-const handleStatusGetSrc = extractFunction("handleStatusGet");
+const handleStatusGetSrc = extractFunction("handleStatusGet").replace(/let persistence: Record<string, unknown>/, "let persistence");
 
 function makePersistenceHarness() {
   const updated: Array<{ id: string; data: Record<string, unknown> }> = [];
