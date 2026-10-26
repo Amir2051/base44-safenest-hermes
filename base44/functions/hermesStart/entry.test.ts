@@ -465,7 +465,7 @@ Deno.test("QUEUED stored ID -> no duplicate /start", async () => {
     "must NOT POST /start on a QUEUED investigation",
   );
   assertEquals(sb.started, []);
-  assertEquals(out.replacedReason, null);
+  assertEquals(out.replacedReason, undefined);
 });
 
 Deno.test("RUNNING stored ID -> does NOT POST /start again", async () => {
@@ -757,7 +757,7 @@ function makePersistenceHarness() {
     () => "evidence",
     () => ({ claim: "verified test claim" }),
     () => "high",
-    async (caseId: string, investigationId: string, findings: unknown[], evidence: unknown[]) => {
+    async (_base44: unknown, caseId: string, investigationId: string, findings: unknown[], evidence: unknown[]) => {
       graphCalls.push({ caseId, investigationId, findings, evidence });
     },
   ) as (base44: unknown, record: Record<string, unknown>, status: Record<string, unknown>, findings: unknown[], report: unknown) => Promise<unknown>;
@@ -811,7 +811,17 @@ Deno.test("graph persistence is idempotent and associates nodes and edges with t
     ids.add(entity + ":" + id);
     calls.push({ entity, data });
   };
-  const graph = new Function("mapFindingTypeToCategory", persistEntityGraphSrc + "\nreturn persistEntityGraph;")(
+  const graphSource = persistEntityGraphSrc
+    .replace(/base44: any/g, "base44")
+    .replace(/caseId: string/g, "caseId")
+    .replace(/hermesInvestigationId: string/g, "hermesInvestigationId")
+    .replace(/findings: Array<Record<string, unknown>>/g, "findings")
+    .replace(/evidenceArray: Array<Record<string, unknown>>/g, "evidenceArray")
+    .replace(/: any/g, "")
+    .replace(/ as any/g, "")
+    .replace(/ as string\[\]/g, "")
+    .replace(/ as number/g, "");
+  const graph = new Function("mapFindingTypeToCategory", graphSource + "\nreturn persistEntityGraph;")(
     () => "evidence",
   ) as (base44: unknown, caseId: string, investigationId: string, findings: unknown[], evidence: unknown[]) => Promise<void>;
   const base44 = { asServiceRole: { entities: { GraphNode: { create: create("node") }, GraphEdge: { create: create("edge") } } } };
@@ -890,7 +900,7 @@ Deno.test("status endpoint returns retryable failure when persistence fails", as
 });
 
 // --- tiny assertion helpers (no test framework needed) ---------------------
-function assert(cond: unknown, msg = "assertion failed") {
+function assert(cond: unknown, msg = "assertion failed"): asserts cond {
   if (!cond) throw new Error(msg);
 }
 function assertEquals(actual: unknown, expected: unknown, msg?: string) {
