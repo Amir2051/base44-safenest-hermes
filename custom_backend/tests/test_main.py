@@ -245,3 +245,27 @@ def test_public_user_keeps_legacy_name_and_avatar_aliases():
     assert user["full_name"] == "Legacy User"
     assert user["avatar_url"] == "https://example.test/avatar.png"
     assert user["profile_image"] == "https://example.test/avatar.png"
+
+
+def test_auth_migration_refuses_production_database_names():
+    from custom_backend.migrate_auth import validate_database_name
+
+    with pytest.raises(RuntimeError, match="protected"):
+        validate_database_name("safenestt_ai", "staging")
+    with pytest.raises(RuntimeError, match="protected"):
+        validate_database_name("safenestt_ai_test", "staging")
+
+
+def test_auth_migration_requires_staging_environment_and_database_prefix():
+    from custom_backend.migrate_auth import validate_database_name
+
+    with pytest.raises(RuntimeError, match="only when APP_ENV"):
+        validate_database_name("safenestt_migration_staging_db", "production")
+    with pytest.raises(RuntimeError, match="database name must start"):
+        validate_database_name("postgres", "staging")
+
+
+def test_auth_migration_accepts_dedicated_staging_database():
+    from custom_backend.migrate_auth import validate_database_name
+
+    validate_database_name("safenestt_migration_staging_db", "staging")

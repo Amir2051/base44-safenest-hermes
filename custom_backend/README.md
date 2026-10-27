@@ -60,3 +60,20 @@ Registration does not accept a role, and new users always receive the `investiga
 The frontend now routes the existing `base44.auth.me()`, `updateMe()`, `logout()`, `redirectToLogin()`, `loginViaEmailPassword()`, `register()`, and `isAuthenticated()` calls through `src/lib/customAuthApi.js` to the custom auth API. `src/lib/AuthContext.jsx` uses this independent identity for its session gate, and `src/pages/CustomLogin.jsx` supplies the local sign-in/create-account screen. Base44 entities, function invocation, and integrations are intentionally still on the existing SDK; this change is not a full Base44 backend removal.
 
 Profile writes are restricted to an allow-list and stored in the custom database JSONB profile column. Role, active status, email verification, subscription/billing status, points, and other privileged fields cannot be set through this profile endpoint. The API should be served same-origin through a reverse proxy in production, or set `VITE_CUSTOM_BACKEND_URL` at frontend build time and configure exact `AUTH_ALLOWED_ORIGINS` for that deployment. Do not deploy the frontend bridge until a staging reverse proxy and CORS/origin policy are configured and validated.
+
+## Staging-only auth schema migration
+
+The Render staging service must use a **separate** database. The auth schema is not
+applied automatically at app startup. Once the staging service has its internal
+`DATABASE_URL` configured and `APP_ENV=staging`, run this one-shot command from the
+repository root:
+
+```sh
+python -m custom_backend.migrate_auth
+```
+
+The command verifies the live PostgreSQL database name before applying the idempotent
+`auth_schema.sql`. It refuses `safenestt_ai`, `safenestt_ai_test`, non-staging app
+modes, and databases without the approved `safenestt_migration_` or
+`safenestt_staging_` prefix. It creates only the isolated authentication tables; it
+never migrates cases, evidence, findings, or audit history.
