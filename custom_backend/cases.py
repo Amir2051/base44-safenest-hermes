@@ -244,6 +244,12 @@ async def delete_case(
                 )
                 if row is None:
                     raise HTTPException(status_code=404, detail="Case not found")
+                linked = await conn.fetchrow(
+                    "SELECT investigation_id FROM case_investigations WHERE case_record_id=$1 AND owner_user_id=$2 LIMIT 1",
+                    record_id, uuid.UUID(user["id"]),
+                )
+                if linked is not None:
+                    raise HTTPException(status_code=409, detail="Case has linked investigations and cannot be deleted")
                 await conn.execute("DELETE FROM case_records WHERE id=$1", record_id)
                 await conn.execute(
                     "INSERT INTO case_audit_events(case_record_id, entity_type, actor_user_id, action, changed_fields) VALUES($1,$2,$3,'delete','[]'::jsonb)",
@@ -253,3 +259,133 @@ async def delete_case(
         raise
     except Exception:
         raise HTTPException(status_code=503, detail="Case storage is unavailable") from None
+
+
+class UserInvestigationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target: dict[str, str]
+    investigation_type: str = Field(default="web", min_length=1, max_length=80)
+
+    @field_validator("target")
+    @classmethod
+    def validate_target(cls, value: dict[str, str]) -> dict[str, str]:
+        if set(value) != {"type", "value"}:
+            raise ValueError("Target must contain only type and value")
+        target_type = value["type"].strip()
+        target_value = value["value"].strip()
+        if not target_type or len(target_type) > 40 or not target_value or len(target_value) > 500:
+            raise ValueError("Target type/value is invalid")
+        return {"type": target_type, "value": target_value}
+
+
+async def _require_owned_case(pool: Any, case_id: str, user: dict[str, Any]) -> None:
+    try:
+        row = await pool.fetchrow(
+            "SELECT id FROM case_records WHERE id=$1 AND owner_user_id=$2",
+            case_id, uuid.UUID(user["id"]),
+        )
+    except Exception:
+        raise HTTPException(status_code=503, detail="Case storage is unavailable") from None
+    if row is None:
+        # Avoid revealing whether a case exists but belongs to someone else.
+        raise HTTPException(status_code=404, detail="Case not found")
+
+
+async def _require_owned_investigation(
+    pool: Any, case_id: str, investigation_id: str, user: dict[str, Any]
+) -> None:
+    try:
+        row = await pool.fetchrow(
+            "SELECT investigation_id FROM case_investigations WHERE case_record_id=$1 AND investigation_id=$2 AND owner_user_id=$3",
+            case_id, investigation_id, uuid.UUID(user["id"]),
+        )
+    except Exception:
+        raise HTTPException(status_code=503, detail="Investigation access could not be verified") from None
+    if row is None:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+
+
+@router.post("/{entity_type}/{case_id}/investigations", status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_csrf)])
+async def create_case_investigation(
+    entity_type: str,
+    case_id: str,
+    payload: UserInvestigationCreate,
+    user: dict[str, Any] = Depends(current_user),
+    pool=Depends(get_pool),
+) -> dict[str, Any]:
+    entity_type = _entity_name(entity_type)
+    await _require_owned_case(pool, case_id, user)
+    from .main import _hermes_request
+
+    created = await _hermes_request("POST", "/v1/investigations", payload={
+        "target": payload.target,
+        "investigation_type": payload.investigation_type,
+        "case_id": case_id,
+    })
+    investigation_id = created.get("investigation_id") if isinstance(created, dict) else None
+    if not investigation_id:
+        raise HTTPException(status_code=502, detail="Hermes did not return an investigation ID")
+    status_value = str(created.get("status") or "CREATED")
+    try:
+        await pool.execute(
+            "INSERT INTO case_investigations(investigation_id, case_record_id, owner_user_id, status) VALUES($1,$2,$3,$4)",
+            str(investigation_id), case_id, uuid.UUID(user["id"]), status_value,
+        )
+    except Exception:
+        # Do not claim persistence succeeded if Hermes accepted the run but mapping storage failed.
+        raise HTTPException(status_code=503, detail="Investigation was created but its case link could not be saved; contact support before retrying") from None
+    return created
+
+
+@router.post("/{entity_type}/{case_id}/investigations/{investigation_id}/start", dependencies=[Depends(require_csrf)])
+async def start_case_investigation(
+    entity_type: str,
+    case_id: str,
+    investigation_id: str,
+    user: dict[str, Any] = Depends(current_user),
+    pool=Depends(get_pool),
+) -> dict[str, Any]:
+    _entity_name(entity_type)
+    await _require_owned_investigation(pool, case_id, investigation_id, user)
+    from .main import _hermes_request
+
+    started = await _hermes_request("POST", f"/v1/investigations/{quote(investigation_id, safe='')}/start?wait=false")
+    if isinstance(started, dict) and started.get("status"):
+        await pool.execute(
+            "UPDATE case_investigations SET status=$3, updated_at=now() WHERE case_record_id=$1 AND investigation_id=$2 AND owner_user_id=$4",
+            case_id, investigation_id, str(started["status"]), uuid.UUID(user["id"]),
+        )
+    return started
+
+
+@router.get("/{entity_type}/{case_id}/investigations/{investigation_id}")
+async def get_case_investigation(
+    entity_type: str,
+    case_id: str,
+    investigation_id: str,
+    user: dict[str, Any] = Depends(current_user),
+    pool=Depends(get_pool),
+) -> dict[str, Any]:
+    _entity_name(entity_type)
+    await _require_owned_investigation(pool, case_id, investigation_id, user)
+    from .main import _hermes_request
+
+    return await _hermes_request("GET", f"/v1/investigations/{quote(investigation_id, safe='')}")
+
+
+@router.get("/{entity_type}/{case_id}/investigations/{investigation_id}/{resource}")
+async def get_case_investigation_resource(
+    entity_type: str,
+    case_id: str,
+    investigation_id: str,
+    resource: str,
+    user: dict[str, Any] = Depends(current_user),
+    pool=Depends(get_pool),
+) -> Any:
+    _entity_name(entity_type)
+    if resource not in {"evidence", "findings", "report"}:
+        raise HTTPException(status_code=404, detail="Resource not found")
+    await _require_owned_investigation(pool, case_id, investigation_id, user)
+    from .main import _hermes_request
+
+    return await _hermes_request("GET", f"/v1/investigations/{quote(investigation_id, safe='')}/{resource}")

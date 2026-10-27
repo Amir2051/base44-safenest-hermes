@@ -327,3 +327,69 @@ def test_case_list_query_is_always_scoped_to_authenticated_owner(client, monkeyp
     assert captured["args"][0].hex == user["id"].replace("-", "")
     # Client ownership filters are discarded; they cannot broaden or redirect the query.
     assert captured["args"][2] == "{}"
+
+
+def test_case_investigation_create_requires_owned_case_and_persists_link(client, monkeypatch):
+    from custom_backend.auth import current_user, get_pool, require_csrf
+
+    user = {"id": "6b0ddf08-6f3e-4f31-8f93-343d606edab1", "email": "investigator@example.com", "role": "investigator"}
+    captured = {}
+
+    class FakePool:
+        async def fetchrow(self, query, *args):
+            captured["ownership_query"] = query
+            captured["ownership_args"] = args
+            return {"id": args[0]} if "case_records" in query else None
+
+        async def execute(self, query, *args):
+            captured["insert_query"] = query
+            captured["insert_args"] = args
+
+    async def fake_hermes_request(method, path, *, payload=None):
+        captured["hermes"] = {"method": method, "path": path, "payload": payload}
+        return {"investigation_id": "hermes-run-1", "status": "CREATED"}
+
+    monkeypatch.setattr(main, "_hermes_request", fake_hermes_request)
+    main.app.dependency_overrides[current_user] = lambda: user
+    main.app.dependency_overrides[get_pool] = lambda: FakePool()
+    main.app.dependency_overrides[require_csrf] = lambda: None
+    try:
+        response = client.post(
+            "/api/v1/entities/MyCase/case-123/investigations",
+            json={"target": {"type": "domain", "value": "example.com"}, "investigation_type": "web"},
+        )
+    finally:
+        main.app.dependency_overrides.clear()
+
+    assert response.status_code == 201
+    assert response.json()["investigation_id"] == "hermes-run-1"
+    assert "owner_user_id=$2" in captured["ownership_query"]
+    assert captured["hermes"]["payload"]["case_id"] == "case-123"
+    assert captured["insert_args"][:3] == ("hermes-run-1", "case-123", __import__("uuid").UUID(user["id"]))
+
+
+def test_case_investigation_cannot_be_created_for_another_users_case(client, monkeypatch):
+    from custom_backend.auth import current_user, get_pool, require_csrf
+
+    user = {"id": "6b0ddf08-6f3e-4f31-8f93-343d606edab1", "email": "investigator@example.com", "role": "investigator"}
+
+    class FakePool:
+        async def fetchrow(self, query, *args):
+            return None
+
+    async def should_not_call(*args, **kwargs):
+        pytest.fail("Hermes must not be called for a case the user does not own")
+
+    monkeypatch.setattr(main, "_hermes_request", should_not_call)
+    main.app.dependency_overrides[current_user] = lambda: user
+    main.app.dependency_overrides[get_pool] = lambda: FakePool()
+    main.app.dependency_overrides[require_csrf] = lambda: None
+    try:
+        response = client.post(
+            "/api/v1/entities/MyCase/foreign-case/investigations",
+            json={"target": {"type": "domain", "value": "example.com"}},
+        )
+    finally:
+        main.app.dependency_overrides.clear()
+
+    assert response.status_code == 404

@@ -24,3 +24,15 @@ CREATE TABLE IF NOT EXISTS case_audit_events (
 );
 CREATE INDEX IF NOT EXISTS case_audit_events_record_created_idx
     ON case_audit_events(case_record_id, created_at DESC);
+
+-- Mapping prevents one authenticated user from probing another case's Hermes IDs.
+CREATE TABLE IF NOT EXISTS case_investigations (
+    investigation_id TEXT PRIMARY KEY,
+    case_record_id TEXT NOT NULL REFERENCES case_records(id) ON DELETE RESTRICT,
+    owner_user_id UUID NOT NULL REFERENCES auth_users(id) ON DELETE RESTRICT,
+    status TEXT NOT NULL DEFAULT 'CREATED',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS case_investigations_case_owner_idx
+    ON case_investigations(case_record_id, owner_user_id, created_at DESC);
