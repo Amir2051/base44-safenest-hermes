@@ -269,3 +269,61 @@ def test_auth_migration_accepts_dedicated_staging_database():
     from custom_backend.migrate_auth import validate_database_name
 
     validate_database_name("safenestt_migration_staging_db", "staging")
+
+
+def test_case_api_requires_an_authenticated_session(client):
+    response = client.get("/api/v1/entities/MyCase")
+    assert response.status_code == 401
+
+
+def test_case_helpers_enforce_supported_entities_and_safe_sorting():
+    from fastapi import HTTPException
+    from custom_backend.cases import _entity_name, _safe_sort
+
+    assert _entity_name("MyCase") == "MyCase"
+    assert _safe_sort("-created_date") == ("created_at", "DESC")
+    assert _safe_sort("case_title") == ("payload->>'case_title'", "ASC")
+    with pytest.raises(HTTPException) as exc:
+        _entity_name("User")
+    assert exc.value.status_code == 404
+    with pytest.raises(HTTPException) as exc:
+        _safe_sort("created_at; DROP TABLE auth_users")
+    assert exc.value.status_code == 422
+
+
+def test_case_payload_owner_is_always_derived_from_session_user():
+    from custom_backend.cases import _owned_payload
+
+    user = {"id": "6b0ddf08-6f3e-4f31-8f93-343d606edab1", "email": "investigator@example.com"}
+    my_case = _owned_payload("MyCase", {"user_id": "victim-id", "client_name": "Reporter"}, user)
+    investigation = _owned_payload("InvestigationCase", {"created_by": "other-user", "case_title": "Test"}, user)
+    assert my_case["user_id"] == user["id"]
+    assert investigation["created_by"] == user["id"]
+    assert investigation["created_by_email"] == user["email"]
+
+
+def test_case_list_query_is_always_scoped_to_authenticated_owner(client, monkeypatch):
+    from custom_backend.auth import current_user, get_pool
+
+    user = {"id": "6b0ddf08-6f3e-4f31-8f93-343d606edab1", "email": "investigator@example.com", "role": "investigator"}
+    captured = {}
+
+    class FakePool:
+        async def fetch(self, query, *args):
+            captured["query"] = query
+            captured["args"] = args
+            return []
+
+    main.app.dependency_overrides[current_user] = lambda: user
+    main.app.dependency_overrides[get_pool] = lambda: FakePool()
+    try:
+        response = client.get("/api/v1/entities/MyCase?filters=%7B%22user_id%22%3A%22someone-else%22%7D")
+    finally:
+        main.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == []
+    assert "owner_user_id = $1" in captured["query"]
+    assert captured["args"][0].hex == user["id"].replace("-", "")
+    # Client ownership filters are discarded; they cannot broaden or redirect the query.
+    assert captured["args"][2] == "{}"

@@ -77,3 +77,18 @@ The command verifies the live PostgreSQL database name before applying the idemp
 modes, and databases without the approved `safenestt_migration_` or
 `safenestt_staging_` prefix. It creates only the isolated authentication tables; it
 never migrates cases, evidence, findings, or audit history.
+
+## Initial owner-scoped case API
+
+The first case-data slice supports only `MyCase` and `InvestigationCase` through
+`/api/v1/entities/{entity_type}`. New records are assigned to the authenticated
+session user on the server; owner fields from the browser are not trusted. Reads,
+updates, and deletes are scoped to that owner, and writes require the session-bound
+CSRF token. A small audit table records action metadata and changed field names, not
+case contents or victim/suspect PII.
+
+To apply both the authentication and case tables on a dedicated staging database,
+use `APP_ENV=staging` and run `python -m custom_backend.migrate_staging`. This is an
+explicit one-shot command and does not run on service startup. It still does not
+import historical Base44 data, evidence files, findings, or the 172 historical audit
+events; those require separate reconciliation and preservation checks.

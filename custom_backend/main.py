@@ -17,6 +17,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .auth import router as auth_router
+from .cases import router as cases_router
 
 app = FastAPI(
     title="SafeNestT Custom Backend — Hermes Adapter",
@@ -111,6 +112,7 @@ async def _hermes_request(method: str, path: str, *, payload: dict[str, Any] | N
 
 
 app.include_router(auth_router)
+app.include_router(cases_router)
 
 
 @app.get("/health")
