@@ -393,3 +393,36 @@ def test_case_investigation_cannot_be_created_for_another_users_case(client, mon
         main.app.dependency_overrides.clear()
 
     assert response.status_code == 404
+
+
+def test_case_investigation_start_uses_async_mode_after_ownership_check(client, monkeypatch):
+    from custom_backend.auth import current_user, get_pool, require_csrf
+
+    user = {"id": "6b0ddf08-6f3e-4f31-8f93-343d606edab1", "email": "investigator@example.com", "role": "investigator"}
+    captured = {}
+
+    class FakePool:
+        async def fetchrow(self, query, *args):
+            captured["lookup"] = (query, args)
+            return {"investigation_id": args[1]}
+
+        async def execute(self, query, *args):
+            captured["status_update"] = (query, args)
+
+    async def fake_hermes_request(method, path, *, payload=None):
+        captured["hermes"] = (method, path, payload)
+        return {"investigation_id": "run-1", "status": "RUNNING"}
+
+    monkeypatch.setattr(main, "_hermes_request", fake_hermes_request)
+    main.app.dependency_overrides[current_user] = lambda: user
+    main.app.dependency_overrides[get_pool] = lambda: FakePool()
+    main.app.dependency_overrides[require_csrf] = lambda: None
+    try:
+        response = client.post("/api/v1/entities/MyCase/case-123/investigations/run-1/start")
+    finally:
+        main.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert captured["hermes"][0] == "POST"
+    assert captured["hermes"][1] == "/v1/investigations/run-1/start?wait=false"
+    assert captured["status_update"][1][2] == "RUNNING"

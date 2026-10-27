@@ -11,6 +11,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator

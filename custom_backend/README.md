@@ -92,3 +92,13 @@ use `APP_ENV=staging` and run `python -m custom_backend.migrate_staging`. This i
 explicit one-shot command and does not run on service startup. It still does not
 import historical Base44 data, evidence files, findings, or the 172 historical audit
 events; those require separate reconciliation and preservation checks.
+
+## Case-scoped Hermes routes
+
+The authenticated route family now supports creating, starting, and reading a Hermes
+investigation only after verifying the signed-in user owns the linked custom case.
+A mapping table ties each Hermes investigation ID to its case and owner; the private
+service-token routes remain separate for service-to-service use. Starts use
+`wait=false` so HTTP requests return promptly while Hermes runs asynchronously.
+If Hermes creates a run but the mapping insert fails, the API reports the persistence
+failure and explicitly warns callers not to retry blindly; reconciliation is needed.
