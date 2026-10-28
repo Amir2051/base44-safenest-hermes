@@ -364,7 +364,7 @@ def test_case_investigation_create_requires_owned_case_and_persists_link(client,
 
     assert response.status_code == 201
     assert response.json()["investigation_id"] == "hermes-run-1"
-    assert "owner_user_id=$2" in captured["ownership_query"]
+    assert "owner_user_id=$3" in captured["ownership_query"]
     assert captured["hermes"]["payload"]["case_id"] == "case-123"
     assert captured["insert_args"][:3] == ("hermes-run-1", "case-123", __import__("uuid").UUID(user["id"]))
 
@@ -405,7 +405,7 @@ def test_case_investigation_start_uses_async_mode_after_ownership_check(client, 
     class FakePool:
         async def fetchrow(self, query, *args):
             captured["lookup"] = (query, args)
-            return {"investigation_id": args[1]}
+            return {"investigation_id": args[2]}
 
         async def execute(self, query, *args):
             captured["status_update"] = (query, args)

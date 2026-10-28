@@ -303,11 +303,11 @@ class UserInvestigationCreate(BaseModel):
         return {"type": target_type, "value": target_value}
 
 
-async def _require_owned_case(pool: Any, case_id: str, user: dict[str, Any]) -> None:
+async def _require_owned_case(pool: Any, case_id: str, entity_type: str, user: dict[str, Any]) -> None:
     try:
         row = await pool.fetchrow(
-            "SELECT id FROM case_records WHERE id=$1 AND owner_user_id=$2",
-            case_id, uuid.UUID(user["id"]),
+            "SELECT id FROM case_records WHERE id=$1 AND entity_type=$2 AND owner_user_id=$3",
+            case_id, entity_type, uuid.UUID(user["id"]),
         )
     except Exception:
         raise HTTPException(status_code=503, detail="Case storage is unavailable") from None
@@ -317,12 +317,15 @@ async def _require_owned_case(pool: Any, case_id: str, user: dict[str, Any]) -> 
 
 
 async def _require_owned_investigation(
-    pool: Any, case_id: str, investigation_id: str, user: dict[str, Any]
+    pool: Any, case_id: str, entity_type: str, investigation_id: str, user: dict[str, Any]
 ) -> None:
     try:
         row = await pool.fetchrow(
-            "SELECT investigation_id FROM case_investigations WHERE case_record_id=$1 AND investigation_id=$2 AND owner_user_id=$3",
-            case_id, investigation_id, uuid.UUID(user["id"]),
+            """SELECT ci.investigation_id FROM case_investigations ci
+               JOIN case_records cr ON cr.id=ci.case_record_id
+               WHERE ci.case_record_id=$1 AND cr.entity_type=$2
+                 AND ci.investigation_id=$3 AND ci.owner_user_id=$4""",
+            case_id, entity_type, investigation_id, uuid.UUID(user["id"]),
         )
     except Exception:
         raise HTTPException(status_code=503, detail="Investigation access could not be verified") from None
@@ -339,7 +342,7 @@ async def create_case_investigation(
     pool=Depends(get_pool),
 ) -> dict[str, Any]:
     entity_type = _entity_name(entity_type)
-    await _require_owned_case(pool, case_id, user)
+    await _require_owned_case(pool, case_id, entity_type, user)
     from .main import _hermes_request
 
     created = await _hermes_request("POST", "/v1/investigations", payload={
@@ -371,7 +374,7 @@ async def start_case_investigation(
     pool=Depends(get_pool),
 ) -> dict[str, Any]:
     _entity_name(entity_type)
-    await _require_owned_investigation(pool, case_id, investigation_id, user)
+    await _require_owned_investigation(pool, case_id, entity_type, investigation_id, user)
     from .main import _hermes_request
 
     started = await _hermes_request("POST", f"/v1/investigations/{quote(investigation_id, safe='')}/start?wait=false")
@@ -392,7 +395,7 @@ async def get_case_investigation(
     pool=Depends(get_pool),
 ) -> dict[str, Any]:
     _entity_name(entity_type)
-    await _require_owned_investigation(pool, case_id, investigation_id, user)
+    await _require_owned_investigation(pool, case_id, entity_type, investigation_id, user)
     from .main import _hermes_request
 
     return await _hermes_request("GET", f"/v1/investigations/{quote(investigation_id, safe='')}")
@@ -410,7 +413,7 @@ async def get_case_investigation_resource(
     _entity_name(entity_type)
     if resource not in {"evidence", "findings", "report"}:
         raise HTTPException(status_code=404, detail="Resource not found")
-    await _require_owned_investigation(pool, case_id, investigation_id, user)
+    await _require_owned_investigation(pool, case_id, entity_type, investigation_id, user)
     from .main import _hermes_request
 
     return await _hermes_request("GET", f"/v1/investigations/{quote(investigation_id, safe='')}/{resource}")
