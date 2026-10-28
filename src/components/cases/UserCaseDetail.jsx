@@ -49,16 +49,16 @@ export default function UserCaseDetail({ caseData, onClose }) {
   const updateCaseMutation = useMutation({
     mutationFn: async (updates) => {
       if (!caseData.id) throw new Error("Missing case ID");
-      const response = await base44.functions.invoke('caseManagement', {
-        action: 'update',
-        data: {
-          id: caseData.id,
-          entityName: caseData._entityName || 'MyCase',
-          updates: { ...updates, updated_by_user: true }
-        }
+      const entityName = caseData._entityName || 'MyCase';
+      if (!['MyCase', 'InvestigationCase'].includes(entityName)) {
+        throw new Error("This case type has not been migrated to the custom API yet.");
+      }
+      // The custom API derives ownership from the signed-in session and refuses
+      // owner-field edits; regular users no longer need the Base44 caseManagement function.
+      return base44.entities[entityName].update(caseData.id, {
+        ...updates,
+        updated_by_user: true,
       });
-      if (response.data.error) throw new Error(response.data.error);
-      return response.data.case;
     },
     onSuccess: (updated) => {
       if (updated) setLiveCase(prev => ({ ...prev, ...updated }));
