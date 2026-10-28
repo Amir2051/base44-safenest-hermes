@@ -317,7 +317,7 @@ def test_case_list_query_is_always_scoped_to_authenticated_owner(client, monkeyp
     main.app.dependency_overrides[current_user] = lambda: user
     main.app.dependency_overrides[get_pool] = lambda: FakePool()
     try:
-        response = client.get("/api/v1/entities/MyCase?filters=%7B%22user_id%22%3A%22someone-else%22%7D")
+        response = client.get("/api/v1/entities/MyCase?filters=%7B%22client_name%22%3A%22Reporter%22%7D")
     finally:
         main.app.dependency_overrides.clear()
 
@@ -325,8 +325,9 @@ def test_case_list_query_is_always_scoped_to_authenticated_owner(client, monkeyp
     assert response.json() == []
     assert "owner_user_id = $1" in captured["query"]
     assert captured["args"][0].hex == user["id"].replace("-", "")
-    # Client ownership filters are discarded; they cannot broaden or redirect the query.
-    assert captured["args"][2] == "{}"
+    assert captured["args"][2] == '{"client_name":"Reporter"}'
+    assert captured["args"][3] is None
+    assert captured["args"][4:6] == (100, 0)
 
 
 def test_case_investigation_create_requires_owned_case_and_persists_link(client, monkeypatch):
@@ -426,3 +427,23 @@ def test_case_investigation_start_uses_async_mode_after_ownership_check(client, 
     assert captured["hermes"][0] == "POST"
     assert captured["hermes"][1] == "/v1/investigations/run-1/start?wait=false"
     assert captured["status_update"][1][2] == "RUNNING"
+
+
+def test_case_list_rejects_owner_filter_for_another_user_without_querying(client, monkeypatch):
+    from custom_backend.auth import current_user, get_pool
+
+    user = {"id": "6b0ddf08-6f3e-4f31-8f93-343d606edab1", "email": "investigator@example.com", "role": "investigator"}
+
+    class FakePool:
+        async def fetch(self, *args):
+            pytest.fail("A mismatched owner filter must not issue a database query")
+
+    main.app.dependency_overrides[current_user] = lambda: user
+    main.app.dependency_overrides[get_pool] = lambda: FakePool()
+    try:
+        response = client.get("/api/v1/entities/MyCase?filters=%7B%22user_id%22%3A%22someone-else%22%7D")
+    finally:
+        main.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == []

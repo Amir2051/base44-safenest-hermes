@@ -45,6 +45,7 @@ import "@base44/vite-plugin/compat/entities.cjs";
 import "@base44/vite-plugin/compat/integrations.cjs";
 import * as credentialsCompat from "@base44/vite-plugin/compat/base44Client.cjs";
 import { customAuthApi } from "@/lib/customAuthApi";
+import { createCustomEntityAdapter } from "@/lib/customEntityApi";
 
 // snapshot the namespaces our compat peers attach to module.exports.base44
 
@@ -77,6 +78,18 @@ base44Client.auth.register = (emailOrPayload, password, displayName) => {
 base44Client.auth.isAuthenticated = async () => {
   try { await customAuthApi.me(); return true; } catch { return false; }
 };
+
+// Migrate the two core case entities through the independent API first. Other
+// entity families remain on the legacy adapter until their own parity/security
+// tests pass; service-role access is deliberately not overridden here.
+const legacyEntities = base44Client.entities;
+const customCaseEntities = {
+  MyCase: createCustomEntityAdapter("MyCase"),
+  InvestigationCase: createCustomEntityAdapter("InvestigationCase"),
+};
+base44Client.entities = new Proxy({}, {
+  get: (_, entityName) => customCaseEntities[entityName] || legacyEntities[entityName],
+});
 
 // Mount the full compat namespace (entities + functions + integrations + auth) onto
 // window.base44 so React components and hooks that import the named exports resolve

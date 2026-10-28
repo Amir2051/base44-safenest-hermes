@@ -77,6 +77,8 @@ def _owned_payload(entity_type: str, data: dict[str, Any], user: dict[str, Any])
     # Compatibility fields are server-derived, never trusted from browser input.
     if entity_type == "MyCase":
         payload["user_id"] = user["id"]
+        payload["created_by"] = user["email"]
+        payload["created_by_email"] = user["email"]
     else:
         payload["created_by"] = user["id"]
         payload["created_by_email"] = user["email"]
@@ -108,11 +110,13 @@ async def list_cases(
     pool=Depends(get_pool),
     sort: str = Query(default="-created_date", max_length=40),
     limit: int = Query(default=100, ge=1, le=5000),
+    skip: int = Query(default=0, ge=0, le=100000),
     filters: str | None = Query(default=None, max_length=8000),
 ) -> list[dict[str, Any]]:
     entity_type = _entity_name(entity_type)
-    sort_expr, direction = _safe_sort(sort)
+    sort_expr, direction = _safe_sort(sort or "-created_date")
     filter_data: dict[str, Any] = {}
+    record_id: str | None = None
     if filters:
         try:
             parsed = json.loads(filters)
@@ -120,16 +124,36 @@ async def list_cases(
             raise HTTPException(status_code=422, detail="Filters must be a JSON object") from None
         if not isinstance(parsed, dict):
             raise HTTPException(status_code=422, detail="Filters must be a JSON object")
-        if OWNER_FIELDS.intersection(parsed):
-            # Never permit clients to use ownership filters to infer other users' records.
-            parsed = {key: value for key, value in parsed.items() if key not in OWNER_FIELDS}
+        parsed = dict(parsed)
+        record_id_value = parsed.pop("id", None)
+        if record_id_value is not None:
+            if not isinstance(record_id_value, str) or not record_id_value.strip() or len(record_id_value) > 200:
+                raise HTTPException(status_code=422, detail="Invalid record ID filter")
+            record_id = record_id_value.strip()
+        # Owner filters can never widen the server-enforced owner scope. A filter
+        # for another owner returns an empty result rather than being silently widened.
+        for key in ("user_id", "owner_user_id"):
+            if key in parsed:
+                if str(parsed[key]) != str(user["id"]):
+                    return []
+                parsed.pop(key)
+        if "created_by" in parsed:
+            expected_creator = user["email"] if entity_type == "MyCase" else user["id"]
+            if str(parsed.pop("created_by")) != str(expected_creator):
+                return []
+        # Compatibility fields are derived from the session, not queryable as
+        # arbitrary ownership selectors. Remaining fields use JSONB containment.
+        parsed.pop("created_by_email", None)
         filter_data = parsed
     encoded_filter = json.dumps(filter_data, separators=(",", ":"))
     query = f"""SELECT id, payload, created_at, updated_at FROM case_records
                WHERE owner_user_id = $1 AND entity_type = $2 AND payload @> $3::jsonb
-               ORDER BY {sort_expr} {direction} LIMIT $4"""
+                 AND ($4::text IS NULL OR id = $4)
+               ORDER BY {sort_expr} {direction} LIMIT $5 OFFSET $6"""
     try:
-        rows = await pool.fetch(query, uuid.UUID(user["id"]), entity_type, encoded_filter, limit)
+        rows = await pool.fetch(
+            query, uuid.UUID(user["id"]), entity_type, encoded_filter, record_id, limit, skip
+        )
     except Exception:
         raise HTTPException(status_code=503, detail="Case storage is unavailable") from None
     return [_decode_record(row) for row in rows]
