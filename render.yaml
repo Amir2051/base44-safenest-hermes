@@ -21,6 +21,10 @@ services:
         generateValue: true
       - key: CUSTOM_BACKEND_SERVICE_TOKEN
         generateValue: true
+      - key: HERMES_BASE_URL
+        value: https://api.safenestt.com
+      - key: HERMES_API_KEY
+        sync: false
       - key: DATABASE_URL
         fromDatabase:
           name: safenestt-migration-staging-db

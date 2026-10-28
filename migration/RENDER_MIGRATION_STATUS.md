@@ -18,21 +18,21 @@ Updated: 2026-10-27/28 UTC. This file records the isolated migration state; it i
 - Independent email/password sessions, HttpOnly cookie, session-bound CSRF, profile allowlist, and login rate limiting.
 - Owner-scoped `MyCase` and `InvestigationCase` JSONB storage with server-derived owner fields and metadata-only audit events.
 - Partial `caseManagement` replacement for ordinary user create/update, with atomic annual case numbers and duplicate prevention; admin/merge/recovery/workflow actions are intentionally not migrated yet.
-- Case-scoped Hermes create/start/status/evidence/findings/report routes; investigation IDs are mapped to an owned case.
+- Case-scoped Hermes create/start/status/evidence/findings/report routes; investigation IDs are mapped to an owned case. User-facing status polling persists terminal evidence/findings/report snapshots idempotently and avoids duplicate audit events.
 - Explicit, guarded `migrate_staging` command. It only permits `APP_ENV=staging|migration` and a DB name beginning `safenestt_migration_` or `safenestt_staging_`; it refuses `safenestt_ai` and `safenestt_ai_test`.
 - Frontend compatibility adapter for `MyCase` and `InvestigationCase`, plus the custom-auth bridge. `UserCaseDetail` writes now use the custom API.
 
 ## Verification so far
 
-- 35 backend unit tests passed.
+- 38 backend unit tests passed.
 - A DB-backed local smoke test passed against the dedicated local `safenestt_custom_auth` database on port 55433: registration/session, current-user, owner-scoped case create/list/update, case-linked Hermes create/read (Hermes mocked), and cross-owner read denial. Synthetic smoke users/cases were cleaned up afterward.
 - Frontend production build passes. Existing bundle-size warning remains; repository-wide lint and typecheck still have pre-existing failures.
 - Live Render `/health` returned HTTP 200; unauthenticated `/api/v1/auth/me` and case routes return HTTP 401.
 
 ## Deliberate blockers before end-to-end staging
 
-- `render.yaml` now describes the existing staging API and staging database with a Render `fromDatabase` reference and `/health` health check. It has not been synced as a Blueprint, so the new Postgres database is still **not linked** to the API service. `DATABASE_URL` is not configured on the service. The database connector only exposes metadata here, and read-only SQL queries are blocked by the empty IP allowlist; keep that allowlist closed. Sync the Blueprint in Render so the existing service receives the internal connection string, or set it in the service Environment settings. Do not share the secret in chat.
-- The staging service does not yet have `HERMES_BASE_URL`, `HERMES_API_KEY`, or `CUSTOM_BACKEND_SERVICE_TOKEN`; Hermes requests fail closed until those are configured server-side.
+- `render.yaml` now describes the existing staging API and staging database with a Render `fromDatabase` reference, `/health` health check, and the verified `https://api.safenestt.com` Hermes base URL. It has not been synced as a Blueprint, so the new Postgres database is still **not linked** to the API service. `DATABASE_URL` is not configured on the service. The database connector only exposes metadata here, and read-only SQL queries are blocked by the empty IP allowlist; keep that allowlist closed. Sync the Blueprint in Render so the existing service receives the internal connection string, or set it in the service Environment settings. Do not share the secret in chat.
+- The staging service now has server-side `HERMES_BASE_URL=https://api.safenestt.com`, a validated `HERMES_API_KEY`, and a generated `CUSTOM_BACKEND_SERVICE_TOKEN`. The alternate `hermes-engine.safenestt.com` hostname currently returns HTTP 502 and has not been changed.
 - `AUTH_ALLOWED_ORIGINS` must be set to the eventual staging frontend origin before browser auth tests. Do not add `safenestt.com` until a real frontend is deployed and validated.
 - No staging frontend service has been deployed. The full frontend still contains many Base44 entity/function/integration dependencies; only two entity families have begun migrating. A successful build is not Base44 independence.
 

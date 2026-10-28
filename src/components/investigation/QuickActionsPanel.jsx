@@ -7,7 +7,8 @@ import {
   RefreshCw, Shield, Link2, Sparkles
 } from "lucide-react";
 import { toast } from "sonner";
-import { startHermesInvestigation } from "@/hooks/useHermesInvestigation";
+import { startHermesInvestigation, getHermesStatus } from "@/hooks/useHermesInvestigation";
+import { trackEvent } from "@/lib/analytics";
 
 export default function QuickActionsPanel({ caseData, onUpdate, onOpenResponse, onOpenTracking }) {
   const activeCase = caseData;
@@ -65,11 +66,12 @@ export default function QuickActionsPanel({ caseData, onUpdate, onOpenResponse, 
         targetType: "case",
         targetValue: caseData.case_number || caseData.id,
         investigationType: "web",
+        entityType: entityName,
       });
       if (runId !== runIdRef.current) return;
 
-      if (result.error) {
-        toast.error(`Investigation error: ${result.error}`, { id: toastId });
+      if (result?.success === false || result?.error) {
+        toast.error(`Investigation error: ${result.error || "The investigation could not be started."}`, { id: toastId });
       } else if (result.success) {
         const status = result.status || "started";
         toast.success(`Hermes investigation ${status} (ID: ${result.investigation_id || result.hermes_investigation_id})`, { id: toastId });
@@ -80,6 +82,61 @@ export default function QuickActionsPanel({ caseData, onUpdate, onOpenResponse, 
           });
         }
         if (onUpdate) onUpdate();
+
+        // Keep polling in the background after the start request returns. The
+        // Hermes status bridge triggers the idempotent six-phase result sync
+        // when a terminal status is observed.
+        const investigationId = result.hermes_investigation_id || result.investigation_id;
+        const normalizedStatus = String(status).toUpperCase().replace(/[\s-]+/g, "_");
+        const terminalStatuses = new Set([
+          "COMPLETED", "COMPLETE", "DONE", "SUCCESS", "SUCCEEDED", "FINISHED", "OK",
+          "COMPLETED_WITH_ERRORS", "COMPLETED_WITH_WARNINGS", "COMPLETED_WITH_FAILURES",
+          "PARTIAL_SUCCESS", "PARTIALLY_COMPLETED", "PARTIAL_FAILURE", "PARTIALLY_FAILED",
+          "FAILED", "ERROR", "ERRORED", "FAILED_WITH_RESULTS", "CANCELLED", "CANCELED",
+          "ABORTED", "EXPIRED", "TIMEOUT", "TIMED_OUT",
+        ]);
+        if (investigationId && !terminalStatuses.has(normalizedStatus)) {
+          toast.loading("Hermes is running; findings and report will sync when it finishes.", { id: toastId });
+          (async () => {
+            const maxPolls = 600; // 30-minute ceiling; matches the backend policy
+            for (let attempt = 0; attempt < maxPolls; attempt++) {
+              await new Promise((resolve) => setTimeout(resolve, 3000));
+              // Do not cancel backend synchronization just because the user
+              // starts another UI action; this poll also triggers terminal persistence.
+              let polled;
+              try {
+                polled = await getHermesStatus(investigationId);
+              } catch (pollError) {
+                toast.error("Hermes status check failed: " + (pollError?.message || "unknown error"), { id: toastId });
+                return;
+              }
+              const polledStatus = String(polled?.status || "").toUpperCase().replace(/[\s-]+/g, "_");
+              if (terminalStatuses.has(polledStatus)) {
+                const failed = new Set([
+                  "COMPLETED_WITH_ERRORS", "COMPLETED_WITH_FAILURES", "PARTIAL_FAILURE",
+                  "PARTIALLY_FAILED", "FAILED", "ERROR", "ERRORED", "FAILED_WITH_RESULTS",
+                  "CANCELLED", "CANCELED", "ABORTED", "EXPIRED", "TIMEOUT", "TIMED_OUT",
+                ]).has(polledStatus);
+                if (runId === runIdRef.current) {
+                  if (failed) {
+                    toast.warning(`Hermes finished with status ${polled.status}. Open the case to review available results.`, { id: toastId });
+                  } else {
+                    toast.success(`Hermes ${polled.status}; results synchronized.`, { id: toastId });
+                    trackEvent('investigation_completed', {
+                      event_category: 'investigations',
+                      event_label: caseData.case_number || caseData.id || 'unknown'
+                    });
+                  }
+                  onUpdate?.();
+                }
+                return;
+              }
+            }
+            if (runId === runIdRef.current) {
+              toast.warning("Hermes is still running after 30 minutes. Reopen the case to check its latest status.", { id: toastId });
+            }
+          })();
+        }
       } else {
         toast.info(`Status: ${result.status || "unknown"}`, { id: toastId });
       }

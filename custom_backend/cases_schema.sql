@@ -43,3 +43,14 @@ CREATE TABLE IF NOT EXISTS case_sequences (
     last_value BIGINT NOT NULL CHECK (last_value > 0),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Durable result snapshot for completed custom-backend investigations.
+CREATE TABLE IF NOT EXISTS case_investigation_results (
+    investigation_id TEXT PRIMARY KEY REFERENCES case_investigations(investigation_id) ON DELETE RESTRICT,
+    status TEXT NOT NULL,
+    evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
+    findings JSONB NOT NULL DEFAULT '[]'::jsonb,
+    report JSONB NOT NULL DEFAULT '{}'::jsonb,
+    upstream_status JSONB NOT NULL DEFAULT '{}'::jsonb,
+    synced_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

@@ -529,3 +529,105 @@ def test_case_management_create_assigns_owner_and_allocates_case_number(client):
     assert case["user_id"] == user["id"]
     assert case["created_by"] == user["email"]
     assert captured["audit"][1][3] is not None
+
+
+def test_user_hermes_status_persists_terminal_results_idempotently(client, monkeypatch):
+    from datetime import datetime, timezone
+    from custom_backend.auth import current_user, get_pool
+
+    user = {"id": "6b0ddf08-6f3e-4f31-8f93-343d606edab1", "email": "investigator@example.com", "role": "investigator"}
+    captured = {"writes": [], "upstream": []}
+    now = datetime.now(timezone.utc)
+
+    class AsyncContext:
+        def __init__(self, value): self.value = value
+        async def __aenter__(self): return self.value
+        async def __aexit__(self, *args): return False
+
+    class FakeConnection:
+        def transaction(self): return AsyncContext(self)
+        async def execute(self, query, *args): captured["writes"].append((query, args))
+
+    class FakePool:
+        def __init__(self): self.conn = FakeConnection()
+        async def fetchrow(self, query, *args):
+            if "case_investigation_results" in query:
+                return None
+            return {"case_record_id": "case-123", "status": "RUNNING", "entity_type": "MyCase"}
+        async def execute(self, query, *args): captured["writes"].append((query, args))
+        def acquire(self): return AsyncContext(self.conn)
+
+    async def fake_hermes_request(method, path, *, payload=None):
+        captured["upstream"].append((method, path))
+        if path.endswith("/evidence"): return [{"type": "url", "value": "example.test"}]
+        if path.endswith("/findings"): return [{"severity": "low", "title": "Smoke finding"}]
+        if path.endswith("/report"): return {"summary": "Smoke report"}
+        return {"investigation_id": "run-smoke", "status": "COMPLETED"}
+
+    monkeypatch.setattr(main, "_hermes_request", fake_hermes_request)
+    main.app.dependency_overrides[current_user] = lambda: user
+    main.app.dependency_overrides[get_pool] = lambda: FakePool()
+    try:
+        response = client.get("/api/v1/user/investigations/run-smoke")
+    finally:
+        main.app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    assert response.json()["results_synced"] is True
+    assert response.json()["results"]["findings"][0]["title"] == "Smoke finding"
+    assert len(captured["upstream"]) == 4
+    assert any("case_investigation_results" in query for query, _ in captured["writes"])
+    assert any("case_audit_events" in query for query, _ in captured["writes"])
+
+
+def test_user_hermes_status_does_not_probe_unowned_investigation(client, monkeypatch):
+    from custom_backend.auth import current_user, get_pool
+
+    user = {"id": "6b0ddf08-6f3e-4f31-8f93-343d606edab1", "email": "investigator@example.com", "role": "investigator"}
+
+    class FakePool:
+        async def fetchrow(self, query, *args): return None
+
+    async def should_not_call(*args, **kwargs):
+        pytest.fail("Hermes must not be called for an investigation not mapped to the current user")
+
+    monkeypatch.setattr(main, "_hermes_request", should_not_call)
+    main.app.dependency_overrides[current_user] = lambda: user
+    main.app.dependency_overrides[get_pool] = lambda: FakePool()
+    try:
+        response = client.get("/api/v1/user/investigations/foreign-run")
+    finally:
+        main.app.dependency_overrides.clear()
+
+    assert response.status_code == 404
+
+
+def test_user_hermes_status_reuses_cached_terminal_snapshot(client, monkeypatch):
+    from custom_backend.auth import current_user, get_pool
+
+    user = {"id": "6b0ddf08-6f3e-4f31-8f93-343d606edab1", "email": "investigator@example.com", "role": "investigator"}
+    calls = []
+
+    class FakePool:
+        async def fetchrow(self, query, *args):
+            if "case_investigation_results" in query:
+                return {"status": "COMPLETED", "evidence": '[{"value":"cached"}]', "findings": '[{"title":"cached finding"}]', "report": '{"summary":"cached report"}'}
+            return {"case_record_id": "case-123", "status": "COMPLETED", "entity_type": "MyCase"}
+        async def execute(self, query, *args): return "UPDATE 1"
+
+    async def fake_hermes_request(method, path, *, payload=None):
+        calls.append(path)
+        return {"investigation_id": "run-cached", "status": "COMPLETED"}
+
+    monkeypatch.setattr(main, "_hermes_request", fake_hermes_request)
+    main.app.dependency_overrides[current_user] = lambda: user
+    main.app.dependency_overrides[get_pool] = lambda: FakePool()
+    try:
+        response = client.get("/api/v1/user/investigations/run-cached")
+    finally:
+        main.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["results_synced"] is True
+    assert response.json()["results"]["report"]["summary"] == "cached report"
+    assert calls == ["/v1/investigations/run-cached"]

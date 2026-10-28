@@ -112,3 +112,14 @@ case numbers atomically, derives ownership fields from the session, and records
 metadata-only audit events. Unported admin actions (`create_for_user`, merge, recovery,
 redaction administration, and workflow triggers) return `501` from the custom route
 and are not routed through this endpoint by the frontend adapter.
+
+## User-facing Hermes polling and result persistence
+
+When the frontend is built with `VITE_CUSTOM_BACKEND_URL`, the investigation hook
+uses the custom backend for start, status, and health rather than invoking the
+Base44 `hermesStart` function. Status lookups are resolved through the authenticated
+user's case-to-investigation mapping. On terminal states, evidence, findings, and
+report snapshots are saved idempotently in `case_investigation_results`; repeat polls
+reuse the cached snapshot rather than duplicating audit events. This is not a
+historical Base44 data import, and it does not yet recreate the full graph/correlation
+pipeline or all legacy result entities.

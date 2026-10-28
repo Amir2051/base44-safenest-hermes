@@ -130,3 +130,45 @@ export function isCustomEntity(entityType) {
 export async function invokeCustomCaseManagement(payload) {
   return request('/api/v1/case-management/', { method: 'POST', body: payload });
 }
+
+export function isCustomBackendEnabled() {
+  return Boolean(import.meta.env.VITE_CUSTOM_BACKEND_URL);
+}
+
+export async function startCustomHermesInvestigation({
+  caseId,
+  entityType = 'MyCase',
+  targetType = 'domain',
+  targetValue,
+  investigationType = 'web',
+}) {
+  if (!caseId) throw new Error('caseId is required');
+  if (!targetValue) throw new Error('targetValue is required');
+  const base = entityPath(entityType, caseId);
+  const created = await request(`${base}/investigations`, {
+    method: 'POST',
+    body: { target: { type: targetType, value: targetValue }, investigation_type: investigationType },
+  });
+  const investigationId = created?.investigation_id || created?.hermes_investigation_id;
+  if (!investigationId) throw new Error('Hermes did not return an investigation ID');
+  try {
+    const started = await request(`${base}/investigations/${encodeURIComponent(String(investigationId))}/start`, { method: 'POST' });
+    return { ...created, ...(started || {}), success: true, hermes_investigation_id: investigationId };
+  } catch (error) {
+    error.investigation_id = investigationId;
+    throw error;
+  }
+}
+
+export async function getCustomHermesStatus(investigationId) {
+  if (!investigationId) throw new Error('investigationId is required');
+  return request(`/api/v1/user/investigations/${encodeURIComponent(String(investigationId))}`);
+}
+
+export async function checkCustomHermesHealth() {
+  try {
+    return await request('/api/v1/user/hermes/health');
+  } catch (error) {
+    return { status: 'unavailable', error: error?.message || 'Hermes health check failed' };
+  }
+}
