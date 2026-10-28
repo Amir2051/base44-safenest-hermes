@@ -36,3 +36,10 @@ CREATE TABLE IF NOT EXISTS case_investigations (
 );
 CREATE INDEX IF NOT EXISTS case_investigations_case_owner_idx
     ON case_investigations(case_record_id, owner_user_id, created_at DESC);
+
+-- Atomic annual case-number allocation for new custom-backend cases.
+CREATE TABLE IF NOT EXISTS case_sequences (
+    year INTEGER PRIMARY KEY,
+    last_value BIGINT NOT NULL CHECK (last_value > 0),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

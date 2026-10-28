@@ -45,7 +45,7 @@ import "@base44/vite-plugin/compat/entities.cjs";
 import "@base44/vite-plugin/compat/integrations.cjs";
 import * as credentialsCompat from "@base44/vite-plugin/compat/base44Client.cjs";
 import { customAuthApi } from "@/lib/customAuthApi";
-import { createCustomEntityAdapter } from "@/lib/customEntityApi";
+import { createCustomEntityAdapter, invokeCustomCaseManagement } from "@/lib/customEntityApi";
 
 // snapshot the namespaces our compat peers attach to module.exports.base44
 
@@ -89,6 +89,34 @@ const customCaseEntities = {
 };
 base44Client.entities = new Proxy({}, {
   get: (_, entityName) => customCaseEntities[entityName] || legacyEntities[entityName],
+});
+
+// Route ordinary user case create/update actions to the custom backend. Admin-only
+// create-for-user, merge/recovery, and workflow actions remain on the legacy path
+// until their authorization and side effects have dedicated replacements.
+const legacyFunctions = base44Client.functions;
+const legacyInvoke = legacyFunctions.invoke.bind(legacyFunctions);
+base44Client.functions = new Proxy(legacyFunctions, {
+  get: (target, property, receiver) => {
+    if (property !== "invoke") {
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+    return async (functionName, payload, ...args) => {
+      if (functionName === "caseManagement" && payload?.action === "create") {
+        return { data: await invokeCustomCaseManagement(payload) };
+      }
+      if (functionName === "caseManagement" && payload?.action === "update") {
+        const entityName = payload?.data?.entityName || "MyCase";
+        if (customCaseEntities[entityName]) {
+          const user = await customAuthApi.me();
+          const privileged = user?.role === "admin" || user?.is_admin || user?.job_title === "Fraud Specialist";
+          if (!privileged) return { data: await invokeCustomCaseManagement(payload) };
+        }
+      }
+      return legacyInvoke(functionName, payload, ...args);
+    };
+  },
 });
 
 // Mount the full compat namespace (entities + functions + integrations + auth) onto

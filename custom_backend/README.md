@@ -102,3 +102,13 @@ service-token routes remain separate for service-to-service use. Starts use
 `wait=false` so HTTP requests return promptly while Hermes runs asynchronously.
 If Hermes creates a run but the mapping insert fails, the API reports the persistence
 failure and explicitly warns callers not to retry blindly; reconciliation is needed.
+
+## Partial case-management function replacement
+
+`POST /api/v1/case-management/` supports ordinary signed-in user `create` and
+owner-scoped `update` operations. It preserves the five-minute duplicate check for
+matching pending scammer-wallet/amount submissions, allocates annual `SN-YYYY-NNNNN`
+case numbers atomically, derives ownership fields from the session, and records
+metadata-only audit events. Unported admin actions (`create_for_user`, merge, recovery,
+redaction administration, and workflow triggers) return `501` from the custom route
+and are not routed through this endpoint by the frontend adapter.

@@ -6,7 +6,7 @@ Updated: 2026-10-27/28 UTC. This file records the isolated migration state; it i
 
 - GitHub repository: `Amir2051/base44-safenest-hermes`
 - Staging branch: `safenestt-render-staging`
-- Latest branch commit at this update: `ea33ac0` (frontend user-case update uses the custom entity adapter)
+- The staging branch contains the custom-auth bridge, core case entity adapter, user-case update path, and the initial user-scoped case-management create/update slice; see the branch for its current commit.
 - Render API service: `safenestt-api-staging` (`srv-dbgjj36gekts73eqmjqg`)
 - Staging API URL: `https://safenestt-api-staging.onrender.com`
 - Last verified deployed backend commit: `706d730` (branch changes after that commit are frontend-only)
@@ -17,13 +17,14 @@ Updated: 2026-10-27/28 UTC. This file records the isolated migration state; it i
 - FastAPI liveness route and private service-token-protected Hermes routes.
 - Independent email/password sessions, HttpOnly cookie, session-bound CSRF, profile allowlist, and login rate limiting.
 - Owner-scoped `MyCase` and `InvestigationCase` JSONB storage with server-derived owner fields and metadata-only audit events.
+- Partial `caseManagement` replacement for ordinary user create/update, with atomic annual case numbers and duplicate prevention; admin/merge/recovery/workflow actions are intentionally not migrated yet.
 - Case-scoped Hermes create/start/status/evidence/findings/report routes; investigation IDs are mapped to an owned case.
 - Explicit, guarded `migrate_staging` command. It only permits `APP_ENV=staging|migration` and a DB name beginning `safenestt_migration_` or `safenestt_staging_`; it refuses `safenestt_ai` and `safenestt_ai_test`.
 - Frontend compatibility adapter for `MyCase` and `InvestigationCase`, plus the custom-auth bridge. `UserCaseDetail` writes now use the custom API.
 
 ## Verification so far
 
-- 31 backend unit tests passed.
+- 35 backend unit tests passed.
 - A DB-backed local smoke test passed against the dedicated local `safenestt_custom_auth` database on port 55433: registration/session, current-user, owner-scoped case create/list/update, case-linked Hermes create/read (Hermes mocked), and cross-owner read denial. Synthetic smoke users/cases were cleaned up afterward.
 - Frontend production build passes. Existing bundle-size warning remains; repository-wide lint and typecheck still have pre-existing failures.
 - Live Render `/health` returned HTTP 200; unauthenticated `/api/v1/auth/me` and case routes return HTTP 401.

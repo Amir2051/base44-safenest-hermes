@@ -125,3 +125,8 @@ export function createCustomEntityAdapter(entityType) {
 export function isCustomEntity(entityType) {
   return CUSTOM_ENTITIES.has(entityType);
 }
+
+
+export async function invokeCustomCaseManagement(payload) {
+  return request('/api/v1/case-management/', { method: 'POST', body: payload });
+}

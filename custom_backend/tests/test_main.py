@@ -447,3 +447,85 @@ def test_case_list_rejects_owner_filter_for_another_user_without_querying(client
 
     assert response.status_code == 200
     assert response.json() == []
+
+
+def test_case_management_requires_csrf_before_any_write(client):
+    response = client.post("/api/v1/case-management/", json={"action": "create", "data": {"client_name": "Test"}})
+    assert response.status_code == 403
+
+
+def test_case_management_rejects_unmigrated_actions(client, monkeypatch):
+    from custom_backend.auth import current_user, get_pool, require_csrf
+
+    user = {"id": "6b0ddf08-6f3e-4f31-8f93-343d606edab1", "email": "investigator@example.com", "role": "investigator"}
+    main.app.dependency_overrides[current_user] = lambda: user
+    main.app.dependency_overrides[get_pool] = lambda: object()
+    main.app.dependency_overrides[require_csrf] = lambda: None
+    try:
+        response = client.post("/api/v1/case-management/", json={"action": "merge_cases", "data": {}})
+    finally:
+        main.app.dependency_overrides.clear()
+    assert response.status_code == 501
+
+
+def test_case_management_amount_validation():
+    from fastapi import HTTPException
+    from custom_backend.case_management import _amount
+
+    assert _amount("125.50") == 125.5
+    assert _amount(None) == 0
+    with pytest.raises(HTTPException) as exc:
+        _amount(-1)
+    assert exc.value.status_code == 422
+    with pytest.raises(HTTPException) as exc:
+        _amount("not-a-number")
+    assert exc.value.status_code == 422
+
+
+def test_case_management_create_assigns_owner_and_allocates_case_number(client):
+    import json
+    from datetime import datetime, timezone
+    from custom_backend.auth import current_user, get_pool, require_csrf
+
+    user = {"id": "6b0ddf08-6f3e-4f31-8f93-343d606edab1", "email": "investigator@example.com", "display_name": "Investigator", "role": "investigator"}
+    captured = {}
+    now = datetime.now(timezone.utc)
+
+    class AsyncContext:
+        def __init__(self, value): self.value = value
+        async def __aenter__(self): return self.value
+        async def __aexit__(self, *args): return False
+
+    class FakeConnection:
+        def transaction(self): return AsyncContext(self)
+        async def fetch(self, query, *args): return []
+        async def fetchval(self, query, *args): return 7
+        async def fetchrow(self, query, *args):
+            captured["insert_args"] = args
+            payload = json.loads(args[3])
+            return {"id": args[0], "payload": json.dumps(payload), "created_at": now, "updated_at": now}
+        async def execute(self, query, *args): captured["audit"] = (query, args)
+
+    class FakePool:
+        def __init__(self): self.conn = FakeConnection()
+        def acquire(self): return AsyncContext(self.conn)
+
+    main.app.dependency_overrides[current_user] = lambda: user
+    main.app.dependency_overrides[get_pool] = lambda: FakePool()
+    main.app.dependency_overrides[require_csrf] = lambda: None
+    try:
+        response = client.post("/api/v1/case-management/", json={
+            "action": "create",
+            "data": {"client_name": "Smoke Reporter", "issue_type": "phishing", "amount_lost": 125, "scammer_wallet": "0x" + "a" * 40},
+        })
+    finally:
+        main.app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    case = response.json()["case"]
+    assert case["case_number"].startswith("SN-")
+    assert case["case_number"].endswith("00007")
+    assert case["incident_classification"] == "other_cyber_fraud"
+    assert case["user_id"] == user["id"]
+    assert case["created_by"] == user["email"]
+    assert captured["audit"][1][3] is not None
