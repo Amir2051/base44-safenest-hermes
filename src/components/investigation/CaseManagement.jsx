@@ -114,7 +114,7 @@ export default function CaseManagement({ cases }) {
             <Card
               key={caseItem.id}
               className="bg-gradient-to-br from-[#1a2332] to-[#0f1419] border-cyan-500/20 hover:border-cyan-500/40 transition-all cursor-pointer"
-              onClick={() => setSelectedCase(caseItem)}
+              onClick={() => setSelectedCase({ ...caseItem, _entityName: caseItem._entityName || "InvestigationCase" })}
             >
               <CardContent className="p-6">
                 <div className="flex items-start justify-between gap-4">

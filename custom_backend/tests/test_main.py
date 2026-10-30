@@ -369,6 +369,100 @@ def test_case_investigation_create_requires_owned_case_and_persists_link(client,
     assert captured["insert_args"][:3] == ("hermes-run-1", "case-123", __import__("uuid").UUID(user["id"]))
 
 
+
+def test_case_investigation_create_reuses_existing_idempotency_key(client, monkeypatch):
+    from custom_backend.auth import current_user, get_pool, require_csrf
+    user = {"id": "6b0ddf08-6f3e-4f31-8f93-343d606edab1", "email": "investigator@example.com", "role": "investigator"}
+    state = {"claim": False, "hermes_calls": 0}
+    class FakePool:
+        async def fetchrow(self, query, *args):
+            if "FROM case_records" in query: return {"id": args[0]}
+            if "INSERT INTO case_investigation_requests" in query:
+                if state["claim"]: return None
+                state["claim"] = True
+                return {"id": 1}
+            if "SELECT state, investigation_id" in query:
+                return {"state": "COMPLETED", "investigation_id": "same-run"}
+            return None
+        async def execute(self, query, *args): return "UPDATE 1"
+    async def fake_hermes_request(method, path, *, payload=None):
+        state["hermes_calls"] += 1
+        return {"investigation_id": "same-run", "status": "CREATED"}
+    monkeypatch.setattr(main, "_hermes_request", fake_hermes_request)
+    main.app.dependency_overrides[current_user] = lambda: user
+    main.app.dependency_overrides[get_pool] = lambda: FakePool()
+    main.app.dependency_overrides[require_csrf] = lambda: None
+    try:
+        url = "/api/v1/entities/MyCase/case-123/investigations"
+        headers = {"Idempotency-Key": "case-123-create-001"}
+        body = {"target": {"type": "domain", "value": "example.com"}, "investigation_type": "web"}
+        first = client.post(url, json=body, headers=headers)
+        second = client.post(url, json=body, headers=headers)
+    finally:
+        main.app.dependency_overrides.clear()
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+    assert second.json()["investigation_id"] == "same-run"
+    assert second.json()["idempotent_replay"] is True
+    assert state["hermes_calls"] == 1
+
+
+def test_case_investigation_start_skips_second_concurrent_start(client, monkeypatch):
+    from custom_backend.auth import current_user, get_pool, require_csrf
+    user = {"id": "6b0ddf08-6f3e-4f31-8f93-343d606edab1", "email": "investigator@example.com", "role": "investigator"}
+    calls = []
+    class FakePool:
+        async def fetchrow(self, query, *args):
+            if "JOIN case_records" in query: return {"investigation_id": "run-1"}
+            if "UPDATE case_investigations SET status='STARTING'" in query: return None
+            if "SELECT status FROM case_investigations" in query: return {"status": "RUNNING"}
+            return None
+    async def fake_hermes_request(*args, **kwargs):
+        calls.append(args)
+        return {"status": "RUNNING"}
+    monkeypatch.setattr(main, "_hermes_request", fake_hermes_request)
+    main.app.dependency_overrides[current_user] = lambda: user
+    main.app.dependency_overrides[get_pool] = lambda: FakePool()
+    main.app.dependency_overrides[require_csrf] = lambda: None
+    try:
+        response = client.post("/api/v1/entities/MyCase/case-123/investigations/run-1/start")
+    finally:
+        main.app.dependency_overrides.clear()
+    assert response.status_code == 200, response.text
+    assert response.json()["already_started"] is True
+    assert response.json()["status"] == "RUNNING"
+    assert calls == []
+
+
+def test_case_investigation_start_keeps_unknown_state_after_ambiguous_upstream_error(client, monkeypatch):
+    from custom_backend.auth import current_user, get_pool, require_csrf
+    user = {"id": "6b0ddf08-6f3e-4f31-8f93-343d606edab1", "email": "investigator@example.com", "role": "investigator"}
+    updates = []
+    class FakePool:
+        async def fetchrow(self, query, *args):
+            if "JOIN case_records" in query:
+                return {"investigation_id": "run-unknown"}
+            if "UPDATE case_investigations SET status='STARTING'" in query:
+                return {"investigation_id": "run-unknown"}
+            return None
+        async def execute(self, query, *args):
+            updates.append((query, args))
+    async def ambiguous_hermes_request(*args, **kwargs):
+        raise TimeoutError("upstream timed out after request dispatch")
+    monkeypatch.setattr(main, "_hermes_request", ambiguous_hermes_request)
+    main.app.dependency_overrides[current_user] = lambda: user
+    main.app.dependency_overrides[get_pool] = lambda: FakePool()
+    main.app.dependency_overrides[require_csrf] = lambda: None
+    try:
+        response = client.post("/api/v1/entities/MyCase/case-123/investigations/run-unknown/start")
+    finally:
+        main.app.dependency_overrides.clear()
+    assert response.status_code == 503
+    assert "outcome is unknown" in response.json()["detail"]
+    assert len(updates) == 1
+    assert "status='START_UNKNOWN'" in updates[0][0]
+    assert "status='CREATED'" not in updates[0][0]
+
 def test_case_investigation_cannot_be_created_for_another_users_case(client, monkeypatch):
     from custom_backend.auth import current_user, get_pool, require_csrf
 
@@ -631,3 +725,75 @@ def test_user_hermes_status_reuses_cached_terminal_snapshot(client, monkeypatch)
     assert response.json()["results_synced"] is True
     assert response.json()["results"]["report"]["summary"] == "cached report"
     assert calls == ["/v1/investigations/run-cached"]
+
+
+def test_staging_rejects_production_hermes_hostname(client, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "staging")
+    monkeypatch.setenv("HERMES_BASE_URL", "https://api.safenestt.com")
+    response = client.get(
+        "/api/v1/hermes/health",
+        headers={"Authorization": "Bearer test-service-token-not-for-production"},
+    )
+    assert response.status_code == 503
+    assert "isolated non-production" in response.json()["detail"]
+
+
+def test_case_investigation_start_reconciles_unknown_to_running_without_reposting(client, monkeypatch):
+    from custom_backend.auth import current_user, get_pool, require_csrf
+    user = {"id": "6b0ddf08-6f3e-4f31-8f93-343d606edab1", "email": "investigator@example.com", "role": "investigator"}
+    updates = []
+    class FakePool:
+        async def fetchrow(self, query, *args):
+            if "JOIN case_records" in query: return {"investigation_id": "run-uncertain"}
+            if "UPDATE case_investigations SET status='STARTING'" in query: return None
+            if "SELECT status FROM case_investigations" in query: return {"status": "START_UNKNOWN"}
+            return None
+        async def execute(self, query, *args): updates.append((query, args))
+    calls = []
+    async def fake_hermes_request(method, path, **kwargs):
+        calls.append((method, path))
+        assert method == "GET"
+        return {"investigation_id": "run-uncertain", "status": "RUNNING"}
+    monkeypatch.setattr(main, "_hermes_request", fake_hermes_request)
+    main.app.dependency_overrides[current_user] = lambda: user
+    main.app.dependency_overrides[get_pool] = lambda: FakePool()
+    main.app.dependency_overrides[require_csrf] = lambda: None
+    try:
+        response = client.post("/api/v1/entities/MyCase/case-123/investigations/run-uncertain/start")
+    finally:
+        main.app.dependency_overrides.clear()
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "RUNNING"
+    assert response.json()["reconciled"] is True
+    assert calls == [("GET", "/v1/investigations/run-uncertain")]
+    assert len(updates) == 1 and "SET status=$3" in updates[0][0]
+
+
+def test_case_investigation_start_releases_unknown_lock_only_when_hermes_says_created(client, monkeypatch):
+    from custom_backend.auth import current_user, get_pool, require_csrf
+    user = {"id": "6b0ddf08-6f3e-4f31-8f93-343d606edab1", "email": "investigator@example.com", "role": "investigator"}
+    updates = []
+    class FakePool:
+        async def fetchrow(self, query, *args):
+            if "JOIN case_records" in query: return {"investigation_id": "run-not-started"}
+            if "UPDATE case_investigations SET status='STARTING'" in query: return None
+            if "SELECT status FROM case_investigations" in query: return {"status": "START_UNKNOWN"}
+            return None
+        async def execute(self, query, *args): updates.append((query, args))
+    calls = []
+    async def fake_hermes_request(method, path, **kwargs):
+        calls.append(method)
+        return {"investigation_id": "run-not-started", "status": "CREATED"}
+    monkeypatch.setattr(main, "_hermes_request", fake_hermes_request)
+    main.app.dependency_overrides[current_user] = lambda: user
+    main.app.dependency_overrides[get_pool] = lambda: FakePool()
+    main.app.dependency_overrides[require_csrf] = lambda: None
+    try:
+        response = client.post("/api/v1/entities/MyCase/case-123/investigations/run-not-started/start")
+    finally:
+        main.app.dependency_overrides.clear()
+    assert response.status_code == 200, response.text
+    assert response.json()["retry_required"] is True
+    assert response.json()["status"] == "CREATED"
+    assert calls == ["GET"]
+    assert len(updates) == 1 and "status='CREATED'" in updates[0][0]

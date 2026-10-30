@@ -145,14 +145,28 @@ export async function startCustomHermesInvestigation({
   if (!caseId) throw new Error('caseId is required');
   if (!targetValue) throw new Error('targetValue is required');
   const base = entityPath(entityType, caseId);
+  const requestFingerprint = `${caseId}:${entityType}:${targetType}:${targetValue}:${investigationType}`;
+  const storageKey = `safenestt:hermes-idempotency:${requestFingerprint}`;
+  let idempotencyKey;
+  try {
+    idempotencyKey = sessionStorage.getItem(storageKey);
+    if (!idempotencyKey) {
+      idempotencyKey = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      sessionStorage.setItem(storageKey, idempotencyKey);
+    }
+  } catch {
+    idempotencyKey = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
   const created = await request(`${base}/investigations`, {
     method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey },
     body: { target: { type: targetType, value: targetValue }, investigation_type: investigationType },
   });
   const investigationId = created?.investigation_id || created?.hermes_investigation_id;
   if (!investigationId) throw new Error('Hermes did not return an investigation ID');
   try {
     const started = await request(`${base}/investigations/${encodeURIComponent(String(investigationId))}/start`, { method: 'POST' });
+    try { sessionStorage.removeItem(storageKey); } catch { /* session storage may be unavailable */ }
     return { ...created, ...(started || {}), success: true, hermes_investigation_id: investigationId };
   } catch (error) {
     error.investigation_id = investigationId;

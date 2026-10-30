@@ -10,7 +10,7 @@ from __future__ import annotations
 import hmac
 import os
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, status
@@ -84,6 +84,13 @@ def _hermes_config() -> tuple[str, str]:
         base_url.startswith("http://127.0.0.1") or base_url.startswith("http://localhost")
     ):
         raise HTTPException(status_code=503, detail="Hermes URL must use HTTPS outside localhost")
+    # Staging must never call the production SafeNestT Hermes API. Require a
+    # separately provisioned staging Hermes endpoint instead of silently falling
+    # back to the production hostname from an inherited Render environment.
+    if os.getenv("APP_ENV", "").strip().lower() in {"staging", "migration", "test"}:
+        hostname = (urlparse(base_url).hostname or "").lower()
+        if hostname == "api.safenestt.com":
+            raise HTTPException(status_code=503, detail="Staging Hermes must use an isolated non-production endpoint")
     return base_url, api_key
 
 

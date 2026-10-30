@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .auth import current_user, get_pool, require_csrf
@@ -252,7 +252,7 @@ async def update_case(
     return _decode_record(updated)
 
 
-@router.delete("/{entity_type}/{record_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_csrf)])
+@router.delete("/{entity_type}/{record_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response, response_model=None, dependencies=[Depends(require_csrf)])
 async def delete_case(
     entity_type: str,
     record_id: str,
@@ -338,6 +338,7 @@ async def create_case_investigation(
     entity_type: str,
     case_id: str,
     payload: UserInvestigationCreate,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", min_length=8, max_length=128),
     user: dict[str, Any] = Depends(current_user),
     pool=Depends(get_pool),
 ) -> dict[str, Any]:
@@ -345,24 +346,58 @@ async def create_case_investigation(
     await _require_owned_case(pool, case_id, entity_type, user)
     from .main import _hermes_request
 
-    created = await _hermes_request("POST", "/v1/investigations", payload={
-        "target": payload.target,
-        "investigation_type": payload.investigation_type,
-        "case_id": case_id,
-    })
-    investigation_id = created.get("investigation_id") if isinstance(created, dict) else None
-    if not investigation_id:
-        raise HTTPException(status_code=502, detail="Hermes did not return an investigation ID")
-    status_value = str(created.get("status") or "CREATED")
+    owner_id = uuid.UUID(user["id"])
+    request_id = None
+    if idempotency_key:
+        # Claim before calling Hermes. The unique key makes concurrent/retried requests
+        # converge on one upstream investigation instead of creating duplicates.
+        request_id = await pool.fetchrow(
+            """INSERT INTO case_investigation_requests
+               (owner_user_id, case_record_id, idempotency_key, state)
+               VALUES($1,$2,$3,'PENDING')
+               ON CONFLICT (owner_user_id, case_record_id, idempotency_key) DO NOTHING
+               RETURNING id""",
+            owner_id, case_id, idempotency_key,
+        )
+        if request_id is None:
+            prior = await pool.fetchrow(
+                """SELECT state, investigation_id FROM case_investigation_requests
+                   WHERE owner_user_id=$1 AND case_record_id=$2 AND idempotency_key=$3""",
+                owner_id, case_id, idempotency_key,
+            )
+            if prior and prior.get("investigation_id"):
+                return {"investigation_id": prior["investigation_id"], "status": "EXISTING", "idempotent_replay": True}
+            raise HTTPException(status_code=409, detail="An investigation request with this idempotency key is already being processed")
+
     try:
+        created = await _hermes_request("POST", "/v1/investigations", payload={
+            "target": payload.target,
+            "investigation_type": payload.investigation_type,
+            "case_id": case_id,
+        })
+        investigation_id = created.get("investigation_id") if isinstance(created, dict) else None
+        if not investigation_id:
+            raise HTTPException(status_code=502, detail="Hermes did not return an investigation ID")
+        status_value = str(created.get("status") or "CREATED")
         await pool.execute(
             "INSERT INTO case_investigations(investigation_id, case_record_id, owner_user_id, status) VALUES($1,$2,$3,$4)",
-            str(investigation_id), case_id, uuid.UUID(user["id"]), status_value,
+            str(investigation_id), case_id, owner_id, status_value,
         )
+        if idempotency_key:
+            await pool.execute(
+                """UPDATE case_investigation_requests SET state='COMPLETED', investigation_id=$4, updated_at=now()
+                   WHERE owner_user_id=$1 AND case_record_id=$2 AND idempotency_key=$3""",
+                owner_id, case_id, idempotency_key, str(investigation_id),
+            )
+        return created
+    except HTTPException:
+        # Keep the claim if the upstream outcome is uncertain. Releasing it could
+        # allow a retry to create a duplicate Hermes investigation.
+        raise
     except Exception:
-        # Do not claim persistence succeeded if Hermes accepted the run but mapping storage failed.
-        raise HTTPException(status_code=503, detail="Investigation was created but its case link could not be saved; contact support before retrying") from None
-    return created
+        # Preserve PENDING for reconciliation: the upstream may have accepted the
+        # request even if the response or local persistence failed.
+        raise HTTPException(status_code=503, detail="Investigation outcome requires reconciliation; do not retry with a new key") from None
 
 
 @router.post("/{entity_type}/{case_id}/investigations/{investigation_id}/start", dependencies=[Depends(require_csrf)])
@@ -377,13 +412,82 @@ async def start_case_investigation(
     await _require_owned_investigation(pool, case_id, entity_type, investigation_id, user)
     from .main import _hermes_request
 
-    started = await _hermes_request("POST", f"/v1/investigations/{quote(investigation_id, safe='')}/start?wait=false")
-    if isinstance(started, dict) and started.get("status"):
+    owner_id = uuid.UUID(user["id"])
+    # Compare-and-set is atomic in Postgres: only one concurrent caller can claim STARTING.
+    claimed = await pool.fetchrow(
+        """UPDATE case_investigations SET status='STARTING', updated_at=now()
+           WHERE case_record_id=$1 AND investigation_id=$2 AND owner_user_id=$3
+             AND upper(status) NOT IN ('STARTING','START_UNKNOWN','RUNNING','QUEUED','COMPLETED','FAILED','CANCELLED')
+           RETURNING investigation_id""",
+        case_id, investigation_id, owner_id,
+    )
+    if claimed is None:
+        current = await pool.fetchrow(
+            "SELECT status FROM case_investigations WHERE case_record_id=$1 AND investigation_id=$2 AND owner_user_id=$3",
+            case_id, investigation_id, owner_id,
+        )
+        if current is None:
+            raise HTTPException(status_code=404, detail="Investigation not found")
+        current_status = str(current["status"] or "UNKNOWN")
+        if current_status.upper() in {"STARTING", "START_UNKNOWN"}:
+            # Reconcile an ambiguous start against Hermes before deciding whether
+            # another POST is safe. A GET is read-only; only an authoritative
+            # pre-start state releases the local start lock for a later retry.
+            try:
+                upstream = await _hermes_request(
+                    "GET", f"/v1/investigations/{quote(investigation_id, safe='')}"
+                )
+            except Exception:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Investigation start is still awaiting Hermes status reconciliation.",
+                ) from None
+            upstream_status = str(upstream.get("status") or "UNKNOWN") if isinstance(upstream, dict) else "UNKNOWN"
+            normalized = upstream_status.strip().upper().replace("-", "_").replace(" ", "_")
+            if normalized in {"CREATED", "NEW", "DRAFT", "NOT_STARTED"}:
+                await pool.execute(
+                    "UPDATE case_investigations SET status='CREATED', updated_at=now() WHERE case_record_id=$1 AND investigation_id=$2 AND owner_user_id=$3 AND upper(status) IN ('STARTING','START_UNKNOWN')",
+                    case_id, investigation_id, owner_id,
+                )
+                return {
+                    "investigation_id": investigation_id,
+                    "status": "CREATED",
+                    "reconciled": True,
+                    "retry_required": True,
+                }
+            if normalized != "UNKNOWN":
+                await pool.execute(
+                    "UPDATE case_investigations SET status=$3, updated_at=now() WHERE case_record_id=$1 AND investigation_id=$2 AND owner_user_id=$4 AND upper(status) IN ('STARTING','START_UNKNOWN')",
+                    case_id, investigation_id, upstream_status, owner_id,
+                )
+            return {
+                **(upstream if isinstance(upstream, dict) else {}),
+                "investigation_id": investigation_id,
+                "already_started": True,
+                "reconciled": normalized != "UNKNOWN",
+            }
+        return {"investigation_id": investigation_id, "status": current_status, "already_started": True}
+
+    try:
+        started = await _hermes_request("POST", f"/v1/investigations/{quote(investigation_id, safe='')}/start?wait=false")
+        status_value = str(started.get("status") or "STARTING") if isinstance(started, dict) else "STARTING"
         await pool.execute(
             "UPDATE case_investigations SET status=$3, updated_at=now() WHERE case_record_id=$1 AND investigation_id=$2 AND owner_user_id=$4",
-            case_id, investigation_id, str(started["status"]), uuid.UUID(user["id"]),
+            case_id, investigation_id, status_value, owner_id,
         )
-    return started
+        return started
+    except Exception:
+        # A timeout/connection error is ambiguous: Hermes may have accepted the
+        # start request. Never return this record to CREATED and risk a duplicate
+        # POST. START_UNKNOWN is deliberately non-retryable pending reconciliation.
+        await pool.execute(
+            "UPDATE case_investigations SET status='START_UNKNOWN', updated_at=now() WHERE case_record_id=$1 AND investigation_id=$2 AND owner_user_id=$3 AND status='STARTING'",
+            case_id, investigation_id, owner_id,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Hermes start outcome is unknown. The investigation is held for status reconciliation; do not submit another start request.",
+        ) from None
 
 
 @router.get("/{entity_type}/{case_id}/investigations/{investigation_id}")

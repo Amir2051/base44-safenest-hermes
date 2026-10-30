@@ -54,3 +54,19 @@ CREATE TABLE IF NOT EXISTS case_investigation_results (
     upstream_status JSONB NOT NULL DEFAULT '{}'::jsonb,
     synced_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+
+-- Request claims make retries/concurrent create calls idempotent per owner and case.
+CREATE TABLE IF NOT EXISTS case_investigation_requests (
+    id BIGSERIAL PRIMARY KEY,
+    owner_user_id UUID NOT NULL REFERENCES auth_users(id) ON DELETE RESTRICT,
+    case_record_id TEXT NOT NULL REFERENCES case_records(id) ON DELETE RESTRICT,
+    idempotency_key TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('PENDING','COMPLETED')),
+    investigation_id TEXT REFERENCES case_investigations(investigation_id) ON DELETE RESTRICT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(owner_user_id, case_record_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS case_investigation_requests_created_idx
+    ON case_investigation_requests(created_at);

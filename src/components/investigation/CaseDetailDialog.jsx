@@ -60,6 +60,8 @@ export default function CaseDetailDialog({ caseData, onClose, onUpdate }) {
   const [saving, setSaving] = useState(false);
   const [user, setUser] = useState(null);
   const [liveCase, setLiveCase] = useState(caseData);
+  const caseEntityName = caseData._entityName || caseData.entity_name || "MyCase";
+  const caseEntity = base44.entities[caseEntityName] || base44.entities.MyCase;
   const prevStatusRef = useRef(caseData.status);
 
   useEffect(() => {
@@ -75,13 +77,14 @@ export default function CaseDetailDialog({ caseData, onClose, onUpdate }) {
 
   // Real-time sync so dialog reflects external changes immediately
   useEffect(() => {
-    const unsub = base44.entities.MyCase.subscribe((event) => {
+    if (typeof caseEntity?.subscribe !== "function") return undefined;
+    const unsub = caseEntity.subscribe((event) => {
       if (event.id === caseData.id && event.data) {
         setLiveCase(prev => ({ ...prev, ...event.data }));
       }
     });
-    return unsub;
-  }, [caseData.id]);
+    return typeof unsub === "function" ? unsub : undefined;
+  }, [caseData.id, caseEntityName]);
 
   const isAdmin = user?.role === 'admin' || user?.is_admin;
   // Use liveCase for display so UI reflects updates immediately without closing dialog
@@ -145,7 +148,10 @@ export default function CaseDetailDialog({ caseData, onClose, onUpdate }) {
     mutationFn: async (updates) => {
       if (!caseData.id) throw new Error("Missing case ID — cannot update");
       console.log('🔄 Updating case directly via entity SDK:', caseData.id, updates);
-      const updated = await base44.entities.MyCase.update(caseData.id, updates);
+      if (typeof caseEntity?.update !== "function") {
+        throw new Error(`Case entity ${caseEntityName} does not support updates`);
+      }
+      const updated = await caseEntity.update(caseData.id, updates);
       console.log('✅ Entity update result:', updated);
       return updated;
     },
