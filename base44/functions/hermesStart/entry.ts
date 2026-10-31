@@ -22,7 +22,7 @@
  *   - Case authorization is resolved from Base44 data, not from client input
  *
  * Environment variables (set in Base44 dashboard / Deno env):
- *   HERMES_BASE_URL  - Hermes engine URL (default http://127.0.0.1:8002)
+ *   HERMES_BASE_URL  - Required explicit Hermes engine URL; no default is used.
  *   HERMES_API_KEY   - Server-to-server API key for Hermes
  */
 
@@ -36,8 +36,17 @@ import { createClientFromRequest } from "npm:@base44/sdk@0.8.6";
 // Auth: X-API-Key header (never exposed to browser)
 // Secrets: HERMES_BASE_URL, HERMES_API_KEY via Deno.env.get()
 
-const HERMES_BASE_URL = Deno.env.get("HERMES_BASE_URL") || "http://127.0.0.1:8002";
+// Fail closed: an unset URL must never silently route staging or production to another environment.
+const HERMES_BASE_URL = Deno.env.get("HERMES_BASE_URL") || "";
 const HERMES_API_KEY = Deno.env.get("HERMES_API_KEY") || "";
+
+/** Client polling policy — single source of truth for polling behavior.
+ * Finite safety ceiling prevents indefinite blocking if the backend becomes
+ * unresponsive. Upper bound must be a multiple of the interval and > 0. */
+const HERMES_POLL_POLICY = {
+  intervalMs: 3000,
+  maxPolls: 600, // 30 minutes total
+};
 
 /** True if both HERMES_BASE_URL and HERMES_API_KEY are configured */
 function isConfigured() {
@@ -233,8 +242,10 @@ async function startInvestigation(investigationId) {
     headers: hermestHeaders(),
   });
   const reqId2 = "s" + Math.random().toString(36).slice(2, 6);
-  console.log("Hermes[" + reqId2 + "]: POST /start " + investigationId + " -> ");
-  if (res.status === 200) return await res.json();
+  console.log("Hermes[" + reqId2 + "]: POST /start " + investigationId + " -> " + res.status);
+  // Accept both the historical 200 and an explicit 202 Accepted response.
+  // The engine's async contract may use either status while returning the run handle.
+  if (res.status === 200 || res.status === 202) return await res.json();
   if (res.status === 401) throw new Error("Hermes[" + reqId2 + "]: auth failed");
       if (res.status === 404) throw new Error("Hermes[" + reqId2 + "]: investigation not found");
       if (res.status === 409) {
@@ -307,7 +318,7 @@ async function getReport(investigationId) {
  * Run a full investigation lifecycle: create + start + poll until completion.
  * Returns the final result with findings and report.
  */
-async function runInvestigation(targetType, targetValue, investigationType = "web", pollIntervalMs = 3000, maxPolls = 120, caseId = null) {
+async function runInvestigation(targetType, targetValue, investigationType = "web", pollIntervalMs = HERMES_POLL_POLICY.intervalMs, maxPolls = HERMES_POLL_POLICY.maxPolls, caseId = null) {
   // Top-level TERMINAL status values for Hermes investigation runs. Shared with
   // startVerified() so both guard paths agree on which HEX statuses are terminal.
   const TERMINAL = ["COMPLETED", "FAILED", "CANCELLED"];
@@ -332,9 +343,21 @@ async function runInvestigation(targetType, targetValue, investigationType = "we
       investigationType,
       caseId,
     );
-    const newId = recreated?.investigation_id;
-    if (!newId) throw new Error("Hermes: no investigation_id returned from replacement create");
-    investigationId = newId;
+    const replacementId = recreated?.investigation_id;
+    if (!replacementId) {
+      throw new Error("Hermes: replacement investigation did not return an investigation_id");
+    }
+    const replacementCheck = await investigationExists(replacementId);
+    if (!replacementCheck.exists) {
+      throw new Error("Hermes: replacement investigation could not be verified");
+    }
+    if (TERMINAL.includes(replacementCheck.status)) {
+      throw new Error(
+        "Hermes: replacement investigation is also terminal (" + replacementCheck.status +
+        "); cannot recover",
+      );
+    }
+    investigationId = replacementId;
   }
   await startInvestigation(investigationId);
 
@@ -362,8 +385,14 @@ async function runInvestigation(targetType, targetValue, investigationType = "we
           completed_at: status.completed_at || null,
         };
       }
-    } catch {
-      // On poll error, continue (the investigation may still be running)
+    } catch (e) {
+      // A missing run or rejected credentials are not transient. Retrying a 404
+      // for the full 30-minute window leaves the UI spinning on a dead ID.
+      const message = String(e?.message || e);
+      if (/Hermes: investigation not found|Hermes get: (401|403|404)\b/.test(message)) {
+        throw new Error("Hermes polling stopped for " + investigationId + ": " + message);
+      }
+      // Network errors and server errors can be transient; keep bounded polling.
     }
   }
 
@@ -733,8 +762,8 @@ async function persistEntityGraph(
               hermes_investigation_id: hermesInvestigationId,
             },
             entity_id: caseId,
-          }).catch(() => {});
-        } catch {}
+          }).catch((e) => console.error("Graph persistence error:", String(e && e.message ? e.message : e)));
+        } catch (e) { console.error("Graph persistence error:", String(e && e.message ? e.message : e)); }
       }
     }
 
@@ -760,8 +789,8 @@ async function persistEntityGraph(
           created_at: new Date().toISOString(),
         },
         entity_id: caseId,
-      }).catch(() => {});
-    } catch {}
+      }).catch((e) => console.error("Graph persistence error:", String(e && e.message ? e.message : e)));
+    } catch (e) { console.error("Graph persistence error:", String(e && e.message ? e.message : e)); }
 
     // Build entity node from finding target/indicator
     if (target) {
@@ -782,8 +811,8 @@ async function persistEntityGraph(
             hermes_investigation_id: hermesInvestigationId,
           },
           entity_id: caseId,
-        }).catch(() => {});
-      } catch {}
+        }).catch((e) => console.error("Graph persistence error:", String(e && e.message ? e.message : e)));
+      } catch (e) { console.error("Graph persistence error:", String(e && e.message ? e.message : e)); }
     }
   }
 
@@ -812,8 +841,8 @@ async function persistEntityGraph(
             hermes_investigation_id: hermesInvestigationId,
           },
           entity_id: caseId,
-        }).catch(() => {});
-      } catch {}
+        }).catch((e) => console.error("Graph persistence error:", String(e && e.message ? e.message : e)));
+      } catch (e) { console.error("Graph persistence error:", String(e && e.message ? e.message : e)); }
     }
 
     // Edge: finding → entity node
@@ -835,8 +864,8 @@ async function persistEntityGraph(
             hermes_investigation_id: hermesInvestigationId,
           },
           entity_id: caseId,
-        }).catch(() => {});
-      } catch {}
+        }).catch((e) => console.error("Graph persistence error:", String(e && e.message ? e.message : e)));
+      } catch (e) { console.error("Graph persistence error:", String(e && e.message ? e.message : e)); }
     }
 
     // Edge: evidence → entity node (for provider-backed evidence)
@@ -862,8 +891,8 @@ async function persistEntityGraph(
               hermes_investigation_id: hermesInvestigationId,
             },
             entity_id: caseId,
-          }).catch(() => {});
-        } catch {}
+          }).catch((e) => console.error("Graph persistence error:", String(e && e.message ? e.message : e)));
+        } catch (e) { console.error("Graph persistence error:", String(e && e.message ? e.message : e)); }
       }
     }
   }
@@ -1036,13 +1065,13 @@ async function handleStart(req) {
   try {
     if (waitForCompletion) {
       console.log(`Hermes: running full investigation for case=${caseId} target=${effectiveTargetValue} type=${effectiveTargetType} (source: ${targetSource})`);
-      hermesResult = await runInvestigation(effectiveTargetType, effectiveTargetValue, investigationType, 3000, 120, caseId);
+      hermesResult = await runInvestigation(effectiveTargetType, effectiveTargetValue, investigationType, HERMES_POLL_POLICY.intervalMs, HERMES_POLL_POLICY.maxPolls, caseId);
       hermesInvestigationId = hermesResult.investigation_id;
       hermesStatus = hermesResult.status;
     } else {
       console.log(`Hermes: creating investigation for case=${caseId} target=${effectiveTargetValue} type=${effectiveTargetType} (source: ${targetSource})`);
       const created = await createInvestigation(effectiveTargetType, effectiveTargetValue, investigationType, caseId);
-      let hermesInvestigationId = created.investigation_id;
+      hermesInvestigationId = created.investigation_id;
       if (!hermesInvestigationId) {
         throw new Error("Hermes: no investigation_id returned");
       }
@@ -1082,8 +1111,8 @@ async function handleStart(req) {
 
         hermesInvestigationId = replacementId;
       }
-      await startInvestigation(hermesInvestigationId);
-      hermesStatus = "QUEUED";
+      const started = await startInvestigation(hermesInvestigationId);
+      hermesStatus = started?.status || "RUNNING";
 
       // ── Dateno enrichment (synchronous within this request, fault-isolated) ──
       // Runs server-side ONLY; never breaks the primary investigation.
@@ -1218,7 +1247,7 @@ async function handleStart(req) {
       if (evidenceCount > 0) {
         await base44.asServiceRole.entities.InvestigationCase.update(caseEntity.id, {
           evidence_count: evidenceCount,
-        }).catch(() => {});
+        }).catch((e) => console.error("Case evidence update failed:", String(e && e.message ? e.message : e)));
       }
 
       // Also update the case entity with investigation reference
@@ -1235,7 +1264,7 @@ async function handleStart(req) {
           if (hermesResult?.report) {
             updateData.hermes_report = JSON.stringify(hermesResult.report);
           }
-          await base44.asServiceRole.entities.InvestigationCase.update(caseEntity.id, updateData).catch(() => {});
+          await base44.asServiceRole.entities.InvestigationCase.update(caseEntity.id, updateData).catch((e) => console.error("Case investigation update failed:", String(e && e.message ? e.message : e)));
         } catch {
           // Non-critical
         }
@@ -1257,8 +1286,11 @@ async function handleStart(req) {
   }
 
   // --- Return response ---
+  // success is false whenever the start flow rejected with an error. A frontend
+  // caller must not interpret success:true as "the investigation is running"
+  // when the backend surfaced an error (e.g. 401/403/404, not configured).
   return Response.json({
-    success: true,
+    success: error ? false : true,
     case_id: caseId,
     hermes_investigation_id: hermesInvestigationId || null,
     status: hermesStatus || "UNKNOWN",
@@ -1282,25 +1314,36 @@ async function handleStatusGet(base44, user, investigationId) {
     return Response.json({ error: "investigation_id is required" }, { status: 400 });
   }
 
-  // --- Security: verify user has access to this investigation ---
+  // --- Fail-closed authorization: non-admins must prove the case link ---
+  // A missing entity/record, missing case_id, or lookup/authorization error is
+  // not evidence of permission. Only an authenticated admin may inspect an
+  // unlinked investigation; this exception is based on the verified user role.
+  let caseIdForSync = null;
   try {
     const hermesEntity = await ensureHermesEntity(base44);
-    if (hermesEntity) {
-      const records = await hermesEntity.filter({ hermes_investigation_id: investigationId }).catch(() => []);
-      if (records.length > 0) {
-        const record = records[0];
-        const caseId = record.case_id;
-        if (caseId) {
-          const access = await authorizeCaseAccess(base44, user.id, caseId);
-          if (!access.authorized) {
-            return Response.json({ error: "Access denied to this investigation" }, { status: 403 });
-          }
+    if (!hermesEntity) {
+      if (!isAdmin(user)) {
+        return Response.json({ error: "Unable to verify investigation access" }, { status: 403 });
+      }
+    } else {
+      const records = await hermesEntity.filter({ hermes_investigation_id: investigationId });
+      const record = Array.isArray(records) ? records[0] : null;
+      if (!record || !record.case_id) {
+        if (!isAdmin(user)) {
+          return Response.json({ error: "Access denied to this investigation" }, { status: 403 });
+        }
+      } else {
+        caseIdForSync = record.case_id;
+        const access = await authorizeCaseAccess(base44, user.id, caseIdForSync);
+        if (!access.authorized && !isAdmin(user)) {
+          return Response.json({ error: "Access denied to this investigation" }, { status: 403 });
         }
       }
     }
-  } catch {
+  } catch (e) {
+    console.warn(`Hermes status: access verification failed for user=${user.id} inv=${investigationId}: ${String(e?.message || e)}`);
     if (!isAdmin(user)) {
-      console.warn(`Hermes status: could not verify access for user=${user.id} inv=${investigationId}`);
+      return Response.json({ error: "Unable to verify investigation access" }, { status: 403 });
     }
   }
 
@@ -1313,6 +1356,34 @@ async function handleStatusGet(base44, user, investigationId) {
     const statusResult = await getInvestigation(investigationId);
     const findings = await getFindings(investigationId).catch(() => []);
     const report = await getReport(investigationId).catch(() => null);
+    const terminalStatus = String(statusResult.status || "").toLowerCase().replace(/[\s-]+/g, "_");
+    const isTerminalStatus = [
+      "completed", "complete", "done", "success", "succeeded", "finished", "ok",
+      "completed_with_errors", "completed_with_warnings", "completed_with_failures",
+      "partial_success", "partially_completed", "partial_failure", "partially_failed",
+      "failed", "error", "errored", "failed_with_results", "cancelled", "canceled",
+      "aborted", "expired", "timeout", "timed_out",
+    ].includes(terminalStatus);
+
+    // The deployed sync function owns the canonical six-phase workflow, report,
+    // evidence, findings, risk and graph persistence. Invoke it on terminal
+    // status so asynchronous runs are persisted just like synchronous runs.
+    // It is idempotent and records failures without fabricating results.
+    let syncResult = null;
+    if (isTerminalStatus && caseIdForSync) {
+      try {
+        const synced = await base44.functions.invoke("syncHermesInvestigation", {
+          case_id: caseIdForSync,
+          investigation_id: investigationId,
+        });
+        syncResult = synced?.data ?? synced ?? null;
+        if (syncResult?.ok === false) {
+          console.error("Hermes terminal sync reported failure:", syncResult.error || syncResult.status || "unknown");
+        }
+      } catch (syncError) {
+        console.error("Hermes terminal sync invocation failed:", String(syncError?.message || syncError));
+      }
+    }
 
     return Response.json({
       success: true,
@@ -1322,6 +1393,7 @@ async function handleStatusGet(base44, user, investigationId) {
       findings_count: findings.length,
       findings: findings.slice(0, 50),
       report: report || null,
+      sync: syncResult,
       error: statusResult.error || null,
       completed_at: statusResult.completed_at || null,
     });
@@ -1376,6 +1448,13 @@ Deno.serve({ port: PORT }, async (req: Request): Promise<Response> => {
       const iid = body.id || body.investigation_id;
       if (!iid) return Response.json({ error: "investigation_id required" }, { status: 400 });
       return handleStatusGet(b4, u, iid);
+    }
+    if (body._action) {
+      // Explicit allowlist: only `status` and `health` are supported as _action
+      // overrides. Any other _action value (e.g. the legacy "createInvestigation")
+      // is rejected with a clear 400 so callers adopt the documented contract:
+      // invoke the hermesStart function with its arguments directly (no _action).
+      return Response.json({ error: "unsupported _action" }, { status: 400 });
     }
     // No _action but has case params → start investigation
     if (body.case_id || body.caseId || body.case_number) {
@@ -1454,7 +1533,9 @@ Deno.serve({ port: PORT }, async (req: Request): Promise<Response> => {
             const latest = linked[0];
             storedId = latest.hermes_investigation_id || null;
           }
-        } catch {}
+        } catch (e) {
+          console.warn("Hermes entity list failed (non-critical):", String(e && e.message ? e.message : e));
+        }
       }
 
       console.log(`Hermes: start request for case=${caseId} storedId=${storedId || "none"}`);

@@ -21,8 +21,11 @@ services:
         generateValue: true
       - key: CUSTOM_BACKEND_SERVICE_TOKEN
         generateValue: true
+      # Required manual value: URL of the dedicated staging Hermes service only.
+      # The function has no fallback; if unset, Hermes calls fail closed.
+      # Never point staging at https://api.safenestt.com or any production endpoint.
       - key: HERMES_BASE_URL
-        value: https://api.safenestt.com
+        sync: false
       - key: HERMES_API_KEY
         sync: false
       - key: DATABASE_URL
