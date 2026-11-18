@@ -699,6 +699,7 @@ export default function CaseDetailDialog({ caseData, onClose, onUpdate }) {
                   onUpdate={onUpdate}
                   onOpenResponse={() => setActiveTab('communications')}
                   onOpenTracking={() => setActiveTab('tracking')}
+                  onOpenFindings={() => setActiveTab('evidence')}
               />
 
               {/* Consolidated AI Investigation Hub */}

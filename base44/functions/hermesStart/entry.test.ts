@@ -58,6 +58,7 @@ const startVerifiedSrc = extractFunction("startVerified");
 // The real startInvestigation is used (not stubbed) so that start-time failure
 // handling is genuinely exercised rather than faked by a collaborator.
 const startInvestigationSrc = extractFunction("startInvestigation");
+const handleStatusGetSrc = extractFunction("handleStatusGet");
 
 // ---------------------------------------------------------------------------
 // Sandbox
@@ -716,6 +717,70 @@ Deno.test("no undefined identifier: isCaseNumberLike appears as a definition", (
   assert(definedFunctions.has("waitForCompletion") === false,
     "waitForCompletion is a const, not a function — checked separately");
 });
+
+// --- Fail-closed status authorization regression tests --------------------
+function makeStatusHandler(opts: {
+  records?: unknown[];
+  lookupError?: Error;
+  admin?: boolean;
+  authorized?: boolean;
+  onFetch?: () => void;
+} = {}) {
+  const entity = {
+    filter: async (_filter: unknown) => {
+      if (opts.lookupError) throw opts.lookupError;
+      return opts.records ?? [];
+    },
+  };
+  const fn = new Function(
+    "ensureHermesEntity", "isAdmin", "authorizeCaseAccess", "isConfigured",
+    "getInvestigation", "getFindings", "getReport", "console",
+    `${handleStatusGetSrc}\nreturn handleStatusGet;`,
+  )(
+    async () => entity,
+    (u: any) => opts.admin === true || u?.role === "admin" || u?.is_admin === true,
+    async () => ({ authorized: opts.authorized === true }),
+    () => true,
+    async () => { opts.onFetch?.(); return { status: "RUNNING" }; },
+    async () => [],
+    async () => null,
+    { warn() {}, error() {}, log() {} },
+  ) as (base44: any, user: any, id: string) => Promise<Response>;
+  return fn;
+}
+
+Deno.test("status denies non-admin when investigation has no case link", async () => {
+  let fetched = false;
+  const handler = makeStatusHandler({ records: [], onFetch: () => fetched = true });
+  const response = await handler({}, { id: "user-1", role: "user" }, LIVE_ID);
+  assertEquals(response.status, 403);
+  assertEquals(fetched, false, "must deny before querying Hermes for investigation data");
+});
+
+Deno.test("status denies non-admin when access lookup errors", async () => {
+  let fetched = false;
+  const handler = makeStatusHandler({ lookupError: new Error("lookup unavailable"), onFetch: () => fetched = true });
+  const response = await handler({}, { id: "user-1", role: "user" }, LIVE_ID);
+  assertEquals(response.status, 403);
+  assertEquals(fetched, false, "must fail closed before querying Hermes");
+});
+
+Deno.test("status denies non-owner when linked case authorization fails", async () => {
+  let fetched = false;
+  const handler = makeStatusHandler({ records: [{ case_id: "case-1" }], authorized: false, onFetch: () => fetched = true });
+  const response = await handler({}, { id: "user-1", role: "user" }, LIVE_ID);
+  assertEquals(response.status, 403);
+  assertEquals(fetched, false, "must not query Hermes after failed case authorization");
+});
+
+Deno.test("verified admin may inspect an unlinked investigation", async () => {
+  const handler = makeStatusHandler({ records: [] });
+  const response = await handler({}, { id: "admin-1", role: "admin" }, LIVE_ID);
+  assertEquals(response.status, 200);
+  const body = await response.json();
+  assertEquals(body.investigation_id, LIVE_ID);
+});
+
 
 // --- tiny assertion helpers (no test framework needed) ---------------------
 function assert(cond: unknown, msg = "assertion failed") {

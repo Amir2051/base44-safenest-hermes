@@ -10,7 +10,7 @@ import { toast } from "sonner";
 import { startHermesInvestigation, getHermesStatus } from "@/hooks/useHermesInvestigation";
 import { trackEvent } from "@/lib/analytics";
 
-export default function QuickActionsPanel({ caseData, onUpdate, onOpenResponse, onOpenTracking }) {
+export default function QuickActionsPanel({ caseData, onUpdate, onOpenResponse, onOpenTracking, onOpenFindings }) {
   const activeCase = caseData;
   const caseId = activeCase?.id;
   const entityName = activeCase?._entityName || activeCase?.entity_name || 'MyCase';
@@ -118,16 +118,21 @@ export default function QuickActionsPanel({ caseData, onUpdate, onOpenResponse, 
                   "CANCELLED", "CANCELED", "ABORTED", "EXPIRED", "TIMEOUT", "TIMED_OUT",
                 ]).has(polledStatus);
                 if (runId === runIdRef.current) {
-                  if (failed) {
+                  if (polled.sync?.ok === false || polled.review_sync?.synced === false) {
+                    toast.warning(`Hermes finished, but result synchronization failed: ${polled.sync?.error || polled.sync?.status || polled.review_sync?.reason || "unknown error"}.`, { id: toastId });
+                  } else if (failed) {
                     toast.warning(`Hermes finished with status ${polled.status}. Open the case to review available results.`, { id: toastId });
                   } else {
-                    toast.success(`Hermes ${polled.status}; results synchronized.`, { id: toastId });
+                    toast.success(Number(polled.findings_count) > 0
+                      ? `Hermes ${polled.status}; findings are ready for review.`
+                      : `Hermes ${polled.status}; no findings were returned.`, { id: toastId });
                     trackEvent('investigation_completed', {
                       event_category: 'investigations',
                       event_label: caseData.case_number || caseData.id || 'unknown'
                     });
                   }
                   onUpdate?.();
+                  if (Number(polled.findings_count) > 0) onOpenFindings?.();
                 }
                 return;
               }

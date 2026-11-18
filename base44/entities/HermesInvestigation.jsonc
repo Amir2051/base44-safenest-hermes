@@ -1,0 +1,128 @@
+{
+  "name": "HermesInvestigation",
+  "type": "object",
+  "properties": {
+    "case_id": {
+      "type": "string",
+      "description": "ID of the SafeNestT case this investigation is linked to"
+    },
+    "case_entity_type": {
+      "type": "string",
+      "description": "The entity type of the case (MyCase, InvestigationCase, etc.)"
+    },
+    "user_id": {
+      "type": "string",
+      "description": "ID of the user who triggered the investigation"
+    },
+    "user_email": {
+      "type": "string",
+      "description": "Email of the user who triggered the investigation"
+    },
+    "hermes_investigation_id": {
+      "type": "string",
+      "description": "The Hermes engine investigation ID"
+    },
+    "target_type": {
+      "type": "string",
+      "description": "Type of target investigated (case, domain, wallet, email, ip)"
+    },
+    "target_value": {
+      "type": "string",
+      "description": "The target value that was investigated"
+    },
+    "investigation_type": {
+      "type": "string",
+      "description": "Type of investigation (web, dns, whois, etc.)"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "QUEUED",
+        "RUNNING",
+        "COMPLETED",
+        "FAILED",
+        "CANCELLED",
+        "TIMEOUT",
+        "UNKNOWN"
+      ],
+      "default": "UNKNOWN",
+      "description": "Current status of the Hermes investigation"
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the investigation was started"
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the investigation completed (if applicable)"
+    },
+    "findings_count": {
+      "type": "number",
+      "description": "Number of findings discovered"
+    },
+    "error": {
+      "type": "string",
+      "description": "Error information if the investigation failed (JSON string)"
+    },
+    "result": {
+      "type": "string",
+      "description": "Full investigation result (JSON string with findings, report, risk, etc.)"
+    },
+    "metadata": {
+      "type": "string",
+      "description": "Investigation metadata (JSON string)"
+    }
+  },
+  "rls": {
+    "read": {
+      "$or": [
+        {
+          "user_condition": {
+            "role": "admin"
+          }
+        },
+        {
+          "created_by": "{{user.email}}"
+        }
+      ]
+    },
+    "create": {
+      "$or": [
+        {
+          "user_condition": {
+            "role": "admin"
+          }
+        },
+        {
+          "user_condition": {
+            "role": "user"
+          }
+        },
+        {
+          "user_condition": {
+            "role": "authenticated"
+          }
+        }
+      ]
+    },
+    "update": {
+      "$or": [
+        {
+          "user_condition": {
+            "role": "admin"
+          }
+        },
+        {
+          "created_by": "{{user.email}}"
+        }
+      ]
+    },
+    "delete": {
+      "user_condition": {
+        "role": "admin"
+      }
+    }
+  }
+}
