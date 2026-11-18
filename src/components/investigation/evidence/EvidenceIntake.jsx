@@ -146,16 +146,8 @@ function EvidenceReviewList({ items, caseId }) {
 
     const updateStatus = useMutation({
         mutationFn: ({ id, status, data }) => base44.entities.CaseEvidenceItem.update(id, { status, ...data }),
-        onSuccess: () => {
-            toast.success("Evidence updated");
-            queryClient.invalidateQueries(['evidence-items', caseId]);
-        }
-    });
-
-    const deleteItem = useMutation({
-        mutationFn: (id) => base44.entities.CaseEvidenceItem.delete(id),
-        onSuccess: () => {
-            toast.success("Evidence deleted");
+        onSuccess: (_result, variables) => {
+            toast.success(variables.status === 'confirmed' ? "Finding verified" : variables.status === 'rejected' ? "Finding rejected" : "Evidence updated");
             queryClient.invalidateQueries(['evidence-items', caseId]);
         }
     });
@@ -229,13 +221,13 @@ function EvidenceReviewList({ items, caseId }) {
                                             className="bg-green-600/20 text-green-400 hover:bg-green-600/30 border border-green-600/50"
                                             onClick={() => updateStatus.mutate({ id: item.id, status: 'confirmed' })}
                                         >
-                                            <Check className="w-4 h-4 mr-1" /> Confirm
+                                            <Check className="w-4 h-4 mr-1" /> Verify Finding
                                         </Button>
                                         <Button 
                                             size="sm" 
                                             variant="ghost"
                                             className="text-red-400 hover:bg-red-900/20"
-                                            onClick={() => deleteItem.mutate(item.id)}
+                                            onClick={() => updateStatus.mutate({ id: item.id, status: 'rejected' })}
                                         >
                                             <X className="w-4 h-4 mr-1" /> Reject
                                         </Button>

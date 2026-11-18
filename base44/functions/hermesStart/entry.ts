@@ -648,15 +648,16 @@ async function resolveCaseByCaseNumber(base44, caseNumber) {
 // Mapping helpers: Hermes → Base44
 // ---------------------------------------------------------------------------
 
-/** Map Hermes finding_type to Base44 CaseEvidenceItem.category */
+/** Map Hermes output to the strict CaseEvidenceItem category enum. */
 function mapFindingTypeToCategory(findingType: string, ev: Record<string, unknown>): string {
-  const t = (findingType || "").toUpperCase();
-  if (t === "VERIFIED_EVIDENCE") return "evidence";
-  if (t === "EXTERNAL_INTELLIGENCE") return "external_intelligence";
-  if (t === "AI_INFERENCE") return "ai_inference";
-  if (t === "INVESTIGATOR_CONCLUSION") return "conclusion";
-  if (ev?.source?.toString().endsWith("_api")) return "external_intelligence";
-  return "supporting";
+  const t = String(findingType || "").toUpperCase();
+  const serialized = JSON.stringify(ev || {}).toLowerCase();
+  if (/transaction_hash|tx_hash|txid|transaction_id/.test(serialized)) return "blockchain_transaction";
+  if (/contract_address|smart_contract|contract_interaction/.test(serialized)) return "contract_interaction";
+  if (/wallet_address|wallet/.test(serialized)) return "wallet_address";
+  if (/amount|usd_value|loss_amount|financial_impact/.test(serialized)) return "financial_impact";
+  if (t.includes("SCAM") || t.includes("FRAUD") || /scam|fraud|phish|malware|suspicious|compromis|impersonat/.test(serialized)) return "scam_indicator";
+  return "supporting_document";
 }
 
 /** Map Hermes confidence (0.0–1.0) to Base44 low/medium/high. */
@@ -1112,7 +1113,37 @@ async function handleStart(req) {
         hermesInvestigationId = replacementId;
       }
       const started = await startInvestigation(hermesInvestigationId);
-      hermesStatus = started?.status || "RUNNING";
+      const reportedStartStatus = String(started?.status || "RUNNING").toUpperCase();
+      hermesStatus = reportedStartStatus === "QUEUED" ? "QUEUED" : "RUNNING";
+
+      // Persist the case link immediately for asynchronous runs. The status
+      // endpoint requires this verified link before it can authorize access
+      // and invoke the canonical terminal-result synchronization workflow.
+      if (!hermesEntity) {
+        throw new Error("Hermes tracking entity unavailable; investigation started but cannot be linked to the case");
+      }
+      const startedAt = new Date().toISOString();
+      const asyncRecord = {
+        case_id: caseId,
+        case_entity_type: caseEntity._entityName || caseEntity.entityType || "MyCase",
+        user_id: user.id,
+        user_email: user.email,
+        hermes_investigation_id: hermesInvestigationId,
+        target_type: effectiveTargetType,
+        target_value: effectiveTargetValue,
+        investigation_type: investigationType,
+        status: hermesStatus || "RUNNING",
+        started_at: startedAt,
+        completed_at: null,
+        findings_count: 0,
+        error: null,
+        result: null,
+        metadata: JSON.stringify({ source: "hermes-bridge", triggered_by: user.email, target_source: targetSource }),
+      };
+      const linkedRecords = await hermesEntity.filter({ hermes_investigation_id: hermesInvestigationId });
+      const linkedRecord = Array.isArray(linkedRecords) ? linkedRecords[0] : null;
+      if (linkedRecord?.id) await hermesEntity.update(linkedRecord.id, asyncRecord);
+      else await hermesEntity.create(asyncRecord);
 
       // ── Dateno enrichment (synchronous within this request, fault-isolated) ──
       // Runs server-side ONLY; never breaks the primary investigation.
@@ -1231,7 +1262,8 @@ async function handleStart(req) {
               confidence,
               relevance: findingType === "VERIFIED_EVIDENCE" ? "primary" : "supporting",
               analyst_note: `${findingType}: ${finding.title || finding.claim || ""}`.slice(0, 500),
-              status: "confirmed",
+              // Hermes output is machine-generated; investigator review is required.
+              status: "pending_review",
             }).catch((e: unknown) => console.warn("Evidence item create warning:", e));
           } catch (e) {
             console.warn("Failed to create evidence item:", e);
@@ -1298,6 +1330,46 @@ async function handleStart(req) {
     result: hermesResult || null,
     waitForCompletion,
   });
+}
+
+/**
+ * Fallback review-queue persistence for deployments where the optional
+ * syncHermesInvestigation function is not installed. Access is checked by
+ * handleStatusGet before this helper is called. Existing decisions are kept.
+ */
+async function persistHermesReviewItems(base44, investigationId, findings) {
+  let created = 0;
+  let failed = 0;
+  for (let index = 0; index < findings.length; index++) {
+    const finding = findings[index] || {};
+    const findingType = String(finding.finding_type || finding.type || "HERMES_FINDING");
+    const itemId = `hf-${String(investigationId).slice(0, 32)}-${index}`;
+    try {
+      const existing = await base44.asServiceRole.entities.CaseEvidenceItem.get(itemId).catch(() => null);
+      if (existing) continue;
+      await base44.asServiceRole.entities.CaseEvidenceItem.create({
+        id: itemId,
+        case_id: finding.case_id,
+        category: mapFindingTypeToCategory(findingType, finding),
+        data: {
+          ...finding,
+          hermes_investigation_id: investigationId,
+          finding_id: finding.id || String(index),
+          finding_type: findingType,
+        },
+        source: "extracted",
+        confidence: mapConfidence(Number(finding.confidence) || 0),
+        relevance: findingType.toUpperCase() === "VERIFIED_EVIDENCE" ? "primary" : "supporting",
+        analyst_note: `${findingType}: ${finding.title || finding.claim || "Hermes finding"}`.slice(0, 500),
+        status: "pending_review",
+      });
+      created++;
+    } catch (error) {
+      failed++;
+      console.warn("Hermes review item persistence failed:", error?.message || error);
+    }
+  }
+  return { synced: failed === 0, review_items_created: created, review_items_failed: failed };
 }
 
 // ---------------------------------------------------------------------------
@@ -1370,6 +1442,7 @@ async function handleStatusGet(base44, user, investigationId) {
     // status so asynchronous runs are persisted just like synchronous runs.
     // It is idempotent and records failures without fabricating results.
     let syncResult = null;
+    let reviewSync = null;
     if (isTerminalStatus && caseIdForSync) {
       try {
         const synced = await base44.functions.invoke("syncHermesInvestigation", {
@@ -1377,11 +1450,41 @@ async function handleStatusGet(base44, user, investigationId) {
           investigation_id: investigationId,
         });
         syncResult = synced?.data ?? synced ?? null;
-        if (syncResult?.ok === false) {
-          console.error("Hermes terminal sync reported failure:", syncResult.error || syncResult.status || "unknown");
-        }
       } catch (syncError) {
-        console.error("Hermes terminal sync invocation failed:", String(syncError?.message || syncError));
+        console.warn("Optional Hermes full-result sync unavailable; using local review persistence:", String(syncError?.message || syncError));
+      }
+
+      // Always ensure the review queue is populated unless the canonical sync
+      // explicitly confirms success. This fallback stores the complete finding
+      // payload and never marks machine output as investigator-confirmed.
+      if (syncResult?.ok !== true) {
+        const hermesEntity = await ensureHermesEntity(base44);
+        const linked = hermesEntity
+          ? await hermesEntity.filter({ hermes_investigation_id: investigationId }).catch(() => [])
+          : [];
+        const record = Array.isArray(linked) ? linked[0] : null;
+        if (record?.id) {
+          const fallbackFindings = findings.map((finding) => ({ ...finding, case_id: caseIdForSync }));
+          reviewSync = await persistHermesReviewItems(base44, investigationId, fallbackFindings);
+          const storedStatus = ["COMPLETED", "COMPLETE", "DONE", "SUCCESS", "SUCCEEDED", "FINISHED", "OK", "COMPLETED_WITH_ERRORS", "COMPLETED_WITH_WARNINGS", "PARTIAL_SUCCESS", "PARTIALLY_COMPLETED"].includes(String(statusResult.status || "").toUpperCase())
+            ? "COMPLETED"
+            : ["CANCELLED", "CANCELED", "ABORTED"].includes(String(statusResult.status || "").toUpperCase())
+              ? "CANCELLED"
+              : ["TIMEOUT", "TIMED_OUT", "EXPIRED"].includes(String(statusResult.status || "").toUpperCase())
+                ? "TIMEOUT"
+                : "FAILED";
+          await hermesEntity.update(record.id, {
+            status: storedStatus,
+            completed_at: statusResult.completed_at || new Date().toISOString(),
+            findings_count: findings.length,
+            result: JSON.stringify({ investigation_id: investigationId, status: statusResult.status, findings, report: report || null }),
+            error: statusResult.error ? JSON.stringify(statusResult.error) : null,
+          });
+        } else {
+          reviewSync = { synced: false, reason: "investigation_case_link_missing", review_items_created: 0 };
+        }
+      } else {
+        reviewSync = { synced: true, source: "canonical_sync", review_items_created: 0 };
       }
     }
 
@@ -1394,6 +1497,7 @@ async function handleStatusGet(base44, user, investigationId) {
       findings: findings.slice(0, 50),
       report: report || null,
       sync: syncResult,
+      review_sync: reviewSync,
       error: statusResult.error || null,
       completed_at: statusResult.completed_at || null,
     });
